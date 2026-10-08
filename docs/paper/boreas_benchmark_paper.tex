@@ -1,0 +1,601 @@
+% Standalone working manuscript: no external images or .bib required.
+% Protocol snapshot: 2026-10-07. Empirical results intentionally omitted.
+\documentclass[10pt,twocolumn]{article}
+\usepackage[a4paper,margin=19mm,columnsep=7mm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,booktabs,array,graphicx,xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hyphens]{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+\setlength{\emergencystretch}{2em}
+\newcommand{\TBD}{\textit{TBD}}
+\newcommand{\pending}[1]{\textcolor{blue!55!black}{\textit{[Pending: #1]}}}
+\newcommand{\ap}{\mathrm{AP}_{40}}
+\newcommand{\map}{\mathrm{mAP}_{40}}
+\newcommand{\figplaceholder}[2]{\fbox{\parbox[c][#1][c]{0.90\linewidth}{\centering\small\textbf{Figure placeholder}\\[6pt]#2}}}
+\title{Accuracy, Efficiency, and Sparsity Robustness of LiDAR 3D Object Detectors on Boreas-Objects-V1}
+\author{\textit{Author names to be completed}\\
+\small \textit{Affiliation, city, country to be completed}\\
+\small \textit{Corresponding author email to be completed}}
+\date{Working manuscript --- 7 October 2026}
+\begin{document}
+\maketitle
+\begin{center}
+\small\fbox{\parbox{0.94\linewidth}{\textbf{Draft status.} This manuscript documents the implemented benchmark and the planned analysis. All detector results, uncertainty estimates, and empirical conclusions remain unfilled. Dataset counts describe the prepared data only. Blue notes and \TBD{} cells must be resolved before submission.}}
+\end{center}
+
+\begin{abstract}
+High-resolution LiDAR provides detailed geometric observations, but detector selection requires balancing localization accuracy, inference cost, and sensitivity to changes in sampling density. We develop a systematic benchmark of six LiDAR-only detector configurations on Boreas-Objects-V1: PointPillars, SECOND, CenterPoint, VoxelNeXt, PV-RCNN, and a reduced-channel PointPillars baseline. The benchmark uses a fixed partition of the official training intervals into 29 training and eight validation intervals, with a two-second exclusion buffer, a shared spatial domain, three target classes, and a common augmentation family. Accuracy is measured using an explicitly specified local 3D IoU-based AP40 protocol. Computational performance is measured at batch size one using synchronized latency, including prepared-frame input, preprocessing, transfer, and full detector execution. Range-stratified evaluation separates objects into four distance bands. Sampling robustness is assessed by retaining deterministic subsets of 64, 32, and 16 ring IDs while evaluating the same checkpoint trained with nominal 128-beam input. Planned joint accuracy--speed and accuracy--memory analyses will identify configurations that satisfy different resource constraints. Although the broader Boreas dataset spans multiple seasons, the labeled subset used here restricts the scope to its annotated detection conditions. \pending{Insert the principal quantitative findings and their uncertainty after the benchmark is complete.} The study is designed to support reproducible detector selection without attributing performance differences solely to architecture or proposing a new detection model.
+\end{abstract}
+\noindent\textbf{Keywords:} 3D object detection; LiDAR; Boreas; benchmarking; latency; beam sparsity; Pareto analysis.
+
+\section{Introduction}
+LiDAR-based three-dimensional object detection estimates object categories, positions, dimensions, and orientations from point clouds. Its practical use requires more than a high aggregate accuracy score: a detector must also fit the available memory and process observations within an acceptable time budget. Established architectures make different choices about spatial discretization, feature extraction, prediction heads, and proposal refinement. PointPillars, SECOND, CenterPoint, VoxelNeXt, and PV-RCNN exemplify these choices \cite{lang2019pointpillars,yan2018second,yin2021centerpoint,chen2023voxelnext,shi2020pvrcnn}. Comparing their published scores directly does not isolate their behavior on the same data, implementation, and hardware.
+
+Boreas offers an opportunity to examine detection with dense 128-channel LiDAR observations \cite{burnett2023boreas}. However, using a dataset with multiple seasons does not automatically constitute an evaluation of detection across seasons. Our experiments use Boreas-Objects-V1 and its existing detection annotations; the weather coverage of these annotations defines the scope of our claims. We investigate detector accuracy, computational cost, distance dependence, and sensitivity to deterministic ring subsampling within this scope.
+
+Distance and sampling density are complementary sources of variation. Objects farther from the sensor generally occupy fewer measured points, while removing rings changes the available vertical sampling throughout the scene. The effect depends on object geometry, occlusion, and the detector configuration. Prior work has already investigated beam-induced domain gaps and corruption robustness \cite{wei2022lidardistillation,griesbacher2025beamdensity,kong2023robo3d,dong2023corruptions}. Consequently, our contribution is a reproducible, dataset-specific evaluation protocol and a joint analysis of several operating criteria. We make no claim to introduce beam-density evaluation itself.
+
+The benchmark addresses four research questions:
+\begin{enumerate}
+\item \textbf{RQ1: Accuracy.} How do the six configurations compare in overall and class-specific 3D detection accuracy on nominal 128-beam Boreas-Objects-V1 input?
+\item \textbf{RQ2: Efficiency.} What batch-one latency, memory, and parameter costs accompany their accuracy, and which configurations are Pareto efficient under the measured operating conditions?
+\item \textbf{RQ3: Range.} How do class-specific accuracy and detector rankings vary across radial distance bands?
+\item \textbf{RQ4: Sparsity.} How much accuracy is lost when a checkpoint trained on 128-beam input is evaluated on deterministic 64-, 32-, or 16-ring subsets?
+\end{enumerate}
+
+The study makes three methodological contributions. First, it specifies a shared data and evaluation protocol while exposing configuration differences that cannot reasonably be forced to be identical across architectures. Second, it links overall accuracy to distance and beam-subset behavior, retaining class support counts to make aggregate scores interpretable. Third, it measures a consistent inference boundary that includes preprocessing and detector postprocessing and uses these measurements for resource-constrained comparisons. The reduced-channel PointPillars configuration serves as a capacity baseline within an existing architecture.
+
+The remainder of the paper reviews related work, defines the benchmark, describes training and measurement procedures, provides the structure of the empirical analysis, and discusses threats to validity. Because experiments are ongoing, empirical values and conclusions are explicitly marked for completion.
+
+\section{Related Work}
+\subsection{LiDAR detector architectures}
+PointPillars groups points into vertical columns, learns pillar features, and applies a two-dimensional convolutional backbone to a bird's-eye-view representation \cite{lang2019pointpillars}. SECOND uses sparse convolution over voxelized features \cite{yan2018second}. These approaches motivate a comparison between pillar and three-dimensional voxel representations under a common input domain. PillarNet further demonstrates that pillar-based detection is a broader architectural family rather than a single fixed accuracy--efficiency profile \cite{shi2022pillarnet}.
+
+CenterPoint represents objects through their centers and regresses their attributes \cite{yin2021centerpoint}. Our implementation uses the configured single-stage detector; the name does not imply that every component of the original detection-and-tracking system is evaluated. VoxelNeXt predicts from sparse voxel features \cite{chen2023voxelnext}; the benchmark configuration retains its configured decoding and non-maximum suppression (NMS). PV-RCNN combines voxel features with point-based feature abstraction and proposal refinement \cite{shi2020pvrcnn}. These categories overlap: representation, prediction-head design, and refinement are distinct dimensions. With one configuration per named model, the study compares complete detector configurations and cannot estimate a causal effect of an architectural family alone.
+
+\subsection{Datasets and evaluation conventions}
+KITTI, nuScenes, and the Waymo Open Dataset have established widely used evaluation settings for autonomous-driving perception \cite{geiger2012kitti,caesar2020nuscenes,sun2020waymo}. Their metrics, class definitions, and data distributions are not interchangeable. KITTI's current object-detection evaluation uses 40 recall positions \cite{kitti_eval}; adopting 40 positions does not make a custom matching implementation equivalent to KITTI or to an official Boreas score.
+
+Boreas is a multi-season autonomous-driving dataset \cite{burnett2023boreas}. This paper uses the sunny-condition annotations in Boreas-Objects-V1. A local validation subset is carved from official training intervals, and the official test intervals are not used. Accordingly, comparisons are internal to the disclosed partition. They do not establish a ranking on the official hidden test set or on unlabeled winter sequences.
+
+Adverse-weather research provides useful context but addresses an additional problem. CADC contains adverse driving conditions \cite{pitropov2021cadc}. Gupta et al. study all-weather LiDAR perception, including experiments using Boreas data \cite{gupta2025allweather}. Matteazzi et al. investigate adverse-weather augmentation with latent diffusion models \cite{matteazzi2026augmentation}, and the associated B-3DOD-B-AWC resource provides supplementary detection data \cite{boreas_awc}. These works preclude a general claim that LiDAR detection on Boreas has not been studied. Weather evaluation would require an explicitly incorporated labeled resource and a separate protocol; it is outside the present experiments.
+
+\subsection{Robustness and sensor-density variation}
+Robo3D and the common-corruption detection benchmark examine robustness beyond standard clean-data evaluation \cite{kong2023robo3d,dong2023corruptions}. Eskandar et al. investigate the interaction of architectural and training choices with generalization to unseen domains \cite{eskandar2024generalization}. Their findings motivate reporting augmentation, voxel encoding, and anchor choices alongside accuracy.
+
+LiDAR Distillation explicitly addresses beam-induced domain gaps \cite{wei2022lidardistillation}. Griesbacher and Fruhwirth-Reisinger investigate beam density, including dense 128-beam data \cite{griesbacher2025beamdensity}. Feng et al. study beam loss with a focus on vulnerable road users \cite{feng2026beamloss}. Our primary RQ4 design freezes the dense-input checkpoint and changes only the retained ring subset. It estimates sensitivity to this intervention, rather than performance after adaptation. Its intended value is the combination with class- and range-resolved accuracy and measured computational cost on a disclosed Boreas partition.
+
+\section{Benchmark Definition}
+\label{sec:benchmark}
+\subsection{Detection task and input representation}
+Each frame is a point set
+\begin{equation}
+\mathcal{P}=\{(x_i,y_i,z_i,I_i)\}_{i=1}^{N},
+\end{equation}
+where $I_i$ is the provided intensity. The detector returns scored upright oriented boxes
+\begin{equation}
+\begin{aligned}\mathcal{D}&=\{(b_j,c_j,s_j)\}_{j=1}^{M},\\ b_j&=(x,y,z,d_x,d_y,d_z,\theta).\end{aligned}
+\end{equation}
+The target classes are Car, Pedestrian, and Cyclist. Ring IDs are used during offline subsampling but are not network input features. Per-point timestamps are not input features, and the exporter applies no additional motion deskewing. The protocol uses a single LiDAR frame without camera input, accumulated sweeps, or tracking.
+
+The shared point-cloud domain is
+\begin{equation}
+[-75.2,75.2]\times[-75.2,75.2]\times[-3,5]\ \mathrm{m}.
+\label{eq:domain}
+\end{equation}
+The label exporter retains boxes whose centers satisfy $x,y\in[-75,75)$ and $z\in[-3,5)$. Thus, the annotation-center crop is slightly narrower than the point-cloud domain in the horizontal axes. This boundary convention is retained and disclosed. Models may subsequently apply their configured training-time box-range filters after augmentation. Intensity is exported without an additional normalization transform.
+
+\subsection{Temporal partition and data preparation}
+The partition uses the 37 official object-training temporal intervals listed by the Boreas development kit \cite{pyboreas}. Interval order is preserved. Zero-based indices $0,5,10,15,20,25,30,35$ define validation; the remaining 29 intervals define training. Entire intervals are assigned to a partition. Consecutive frames are not randomly distributed between training and validation.
+
+A training frame is removed if its timestamp is within two seconds of any validation interval. The prepared nominal 128-beam data contain 3,607 training and 1,326 validation frames (Table~\ref{tab:data}). The 16 official test intervals are excluded from this study. The split manifest, frame identifiers, interval list, and exclusion rule should accompany the benchmark release. \pending{Record the exact pyboreas version and the hash of the ordered interval list in the release manifest.}
+
+The temporal buffer reduces direct adjacency between training and validation observations. It does not guarantee spatial independence, because traversals may observe the same route or scene structure. This is a fixed local validation design, not an independent geographic test. The eight validation intervals are also the natural clustering units for the planned uncertainty analysis.
+
+\begin{table}[t]
+\centering\small
+\caption{Prepared 128-beam dataset statistics. Counts refer to retained annotations before model-specific training augmentation. Misc boxes are retained for evaluation ignore handling and are not a target class. These are dataset statistics, not detector results.}
+\label{tab:data}
+\begin{tabular}{lrr}
+\toprule
+Quantity & Training & Validation\\
+\midrule
+Temporal intervals & 29 & 8\\
+Frames & 3,607 & 1,326\\
+Car boxes & 53,332 & 19,751\\
+Pedestrian boxes & 58,773 & 25,792\\
+Cyclist boxes & 6,656 & 2,708\\
+Misc boxes & 2,274 & 817\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The conversion reads the raw six-field point representation, retains XYZ and intensity, and creates OpenPCDet-compatible frame arrays and annotation metadata. For each beam condition, identical frame identifiers, class names, and ground-truth boxes are retained. Objects are not removed from evaluation merely because subsampling leaves them with few or no observed points. Such cases are part of the robustness experiment. Input membership and annotation consistency are checked before inference.
+
+\subsection{Detector configurations}
+All detectors are implemented within the same OpenPCDet checkout \cite{openpcdet2020}. Table~\ref{tab:models} lists the configurations. The benchmark adapts existing templates to the three Boreas target classes and the shared spatial domain. Anchor-based models use class-wise median box dimensions and median bottom heights computed from training annotations only. No validation annotations enter these statistics.
+
+\begin{table*}[t]
+\centering\small
+\caption{Evaluated configurations. The table describes this checkout, not every variant of the corresponding published model. Spatial cell sizes are in meters. The last column describes the benchmark's principal prediction path.}
+\label{tab:models}
+\resizebox{\textwidth}{!}{\begin{tabular}{llll}
+\toprule
+Configuration & Representation & Cell size $(x,y,z)$ & Prediction / refinement\\
+\midrule
+PointPillars & Pillar / BEV & $(0.2,0.2,8.0)$ & Anchor-based, single stage\\
+SECOND & Sparse 3D voxel / BEV & $(0.2,0.2,0.2)$ & Anchor-based, single stage\\
+CenterPoint & Sparse voxel / BEV & $(0.2,0.2,0.2)$ & Center-based, single stage\\
+VoxelNeXt & Sparse voxel & $(0.2,0.2,0.2)$ & Sparse center prediction, configured NMS\\
+PV-RCNN & Voxel and point & $(0.2,0.2,0.2)$ & Proposal generation and point--voxel refinement\\
+PointPillars Lite & Reduced-channel pillar / BEV & $(0.2,0.2,8.0)$ & Anchor-based, single stage\\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+PointPillars Lite halves the pillar feature width from 64 to 32, changes the BEV backbone widths from $(64,128,256)$ to $(32,64,128)$, and changes the three upsampling output widths from 128 to 64 each. Layer counts and the remaining parent configuration are retained. This provides a controlled capacity comparison with PointPillars. It is not introduced as a new architecture or given an independent novelty claim.
+
+The shared input domain does not imply identical retained point sets inside each network. Pillar configurations allow 32 points per cell and 80,000 occupied cells; voxel configurations allow 10 points per cell and 200,000 occupied cells. Truncation and discretization are part of each tested configuration. Identical limits would not equate the representations, but unreported limits could confound interpretation.
+
+\subsection{Shared and model-specific conditions}
+All configurations share frame partitions, target classes, raw input features, spatial domain, augmentation family, epoch budget, and evaluation code. Augmentation consists of world flips along the $x$ and $y$ axes, rotation sampled within $[-\pi/4,\pi/4]$, and scaling within $[0.95,1.05]$. Point order is shuffled during training and retained during evaluation. Ground-truth database sampling, weather augmentation, and beam-drop augmentation are absent from the primary experiment.
+
+Model-specific learning rates, clipping thresholds, and NMS thresholds are preserved and explicitly reported (Appendix~\ref{app:config}). The current final NMS candidate and output caps are 4,096 and 500, respectively. Proposal-stage processing in PV-RCNN and decoder-specific candidate selection remain model-specific. These choices define a comparison of configured systems under shared external conditions. They do not support an assertion that all low-level processing choices are identical.
+
+\begin{figure}[t]
+\centering
+\figplaceholder{36mm}{Boreas-Objects-V1\\$\downarrow$ fixed temporal partition and purge\\shared training protocol $\rightarrow$ six checkpoints\\$\downarrow$ same validation frames at 128/64/32/16 rings\\local AP40, range analysis, and batch-one profiling}
+\caption{Benchmark workflow. Replace this box with a vector diagram using the same processing stages.}
+\label{fig:workflow}
+\end{figure}
+
+\section{Evaluation Metrics}
+\label{sec:metrics}
+\subsection{Local 3D AP40 protocol}
+The principal score is an explicitly defined local validation metric, version \texttt{local\_ap40\_v1}. For two oriented upright boxes $b$ and $g$,
+\begin{equation}
+\operatorname{IoU}_{3D}(b,g)=\frac{V(b\cap g)}{V(b)+V(g)-V(b\cap g)}.
+\end{equation}
+The intersection is obtained from the intersection area of the rotated horizontal rectangles multiplied by their vertical overlap. Class-specific IoU thresholds are $\tau_{\mathrm{Car}}=0.7$ and $\tau_{\mathrm{Pedestrian}}=\tau_{\mathrm{Cyclist}}=0.5$.
+
+Predictions for a class are ordered globally by descending score, with frame identifier and original prediction index as deterministic tie breakers. Each prediction is matched to the highest-IoU unmatched ground-truth box of the same class in the same frame. A match at or above the class threshold is a true positive (TP). An unmatched prediction overlapping any Misc box at that threshold is ignored for every target class. Other unmatched predictions are false positives (FP). A target ground-truth box can be matched once; an unmatched target box contributes to false negatives (FN). Misc boxes are never target positives. This is a local ignore policy, not an assertion of equivalence to official dataset handling.
+
+For the nonignored ordered detections, cumulative precision and recall are
+\begin{equation}
+P_k=\frac{\sum_{i\leq k}\mathrm{TP}_i}{\sum_{i\leq k}(\mathrm{TP}_i+\mathrm{FP}_i)},\quad R_k=\frac{\sum_{i\leq k}\mathrm{TP}_i}{N_{\mathrm{GT}}}.
+\end{equation}
+Define $\widehat P(r)=\max_{k:R_k\geq r}P_k$, with value zero when the recall level is unreachable. The reported percentage score is
+\begin{equation}
+\ap(c)=\frac{100}{40}\sum_{j=1}^{40}\widehat P_c(j/40).
+\label{eq:ap}
+\end{equation}
+Overall $\map$ is the unweighted mean of the three class scores. The current inference configurations export predictions above a score cutoff of 0.001 after configured decoding and NMS. AP is computed from these saved predictions; it does not include detections eliminated by the export cutoff or output caps. The 0.001 cutoff is distinct from the operating-point threshold used below.
+
+If a class has no ground-truth support in a subset, its AP is undefined. The implementation reports a mean over supported classes, so the corresponding class set must be disclosed. All three target classes have support in the current validation distance bins. Comparisons within a table must use the same supported class set rather than silently changing the averaging denominator.
+
+\subsection{Class-specific operating-point metrics}
+Precision, recall, and F1 are additionally reported at score threshold $s=0.1$:
+\begin{equation}
+P=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},\quad R=\frac{\mathrm{TP}}{N_{\mathrm{GT}}},\quad F_1=\frac{2PR}{P+R}.
+\end{equation}
+The implementation uses zero precision when no prediction is selected and zero F1 when $P+R=0$ with nonzero ground-truth support; recall and F1 are undefined when there is no ground-truth support. Counts accompany these rates. The operating point is fixed before comparison and is not optimized separately for each validation class or detector. These metrics expose missed detections and false-positive behavior that a single AP value cannot fully describe. They are not calibrated estimates of operational risk.
+
+\subsection{Range-stratified accuracy}
+Range is the horizontal distance of a box center from the LiDAR origin,
+\begin{equation}
+\rho(b)=\sqrt{x_b^2+y_b^2}.
+\end{equation}
+The four bins are $[0,20)$, $[20,40)$, $[40,60)$, and $[60,\infty)$ meters. Ground-truth and prediction centers are filtered independently into each bin, followed by the same matching and AP calculation as in Equation~\ref{eq:ap}. Misc boxes remain available for ignore matching without an additional range filter. The last bin is restricted by the rectangular annotation domain; it is not an unlimited sensing-range evaluation.
+
+Independent center filtering has a boundary effect: an otherwise matchable overlapping pair can fall into adjacent bins and fail to match in the stratified score. Consequently, RQ3 measures the disclosed center-bin protocol rather than an artifact-free physical distance effect. Class support counts and a proposed boundary sensitivity analysis accompany its interpretation. Results for the unstratified validation set remain the primary overall accuracy score.
+
+\begin{table}[t]
+\centering\small
+\caption{Validation target-box support by range. Counts remain unchanged across beam-subset conditions.}
+\label{tab:support}
+\begin{tabular}{lrrr}
+\toprule
+Range (m) & Car & Pedestrian & Cyclist\\
+\midrule
+$[0,20)$ & 5,345 & 9,465 & 931\\
+$[20,40)$ & 7,456 & 9,191 & 825\\
+$[40,60)$ & 4,851 & 6,465 & 641\\
+$[60,\infty)$ & 2,099 & 671 & 311\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Secondary BEV and legacy evaluator outputs}
+All six configurations predict 3D boxes. BEV evaluation can assess the rotated horizontal footprints of these boxes and is a complementary projection-based metric; using a BEV intermediate representation does not change the prediction task to two-dimensional detection. The benchmark also preserves outputs from OpenPCDet's KITTI-style evaluator as supplementary compatibility information. These outputs are stored separately from local AP40 and must not be substituted into the main tables.
+
+The custom adapter supplies synthetic image-plane boxes and does not reproduce genuine KITTI image-based difficulty strata. Its 2D AP and nominal easy/moderate/hard labels therefore do not establish corresponding camera-detection or difficulty performance. If BEV AP from this adapter is reported, its evaluator and ignore conventions must be named explicitly. A comparison between BEV and 3D accuracy must use disclosed compatible matching conditions. No cross-dataset leaderboard claim is derived from these supplementary outputs.
+
+\subsection{Deterministic beam-subset robustness}
+Let $r_i\in\{0,\ldots,127\}$ denote the integer ring ID of point $i$. For $K\in\{128,64,32,16\}$, set $q_K=128/K$ and retain
+\begin{equation}
+\mathcal{P}_K=\{p_i\in\mathcal{P}_{128}:r_i\bmod q_K=0\}.
+\label{eq:beams}
+\end{equation}
+Thus, the nominal 64-ring condition retains IDs $0,2,\ldots,126$; the 32- and 16-ring conditions retain every fourth and eighth ID. The subsets are nested and deterministic. A nominal ring count does not guarantee that every retained ring has a valid return in every frame.
+
+The primary model is trained on $\mathcal{P}_{128}$ and its weights remain fixed across all four validation conditions. For model $m$ and class $c$, the absolute loss in percentage points and relative retention are
+\begin{align}
+\Delta\ap^{m,c}(K)&=\ap^{m,c}(128)-\ap^{m,c}(K),\\
+\operatorname{Ret}_{m,c}(K)&=100\frac{\ap^{m,c}(K)}{\ap^{m,c}(128)}.
+\end{align}
+Retention is undefined when the dense-input score is zero. The same definitions apply to $\map$. Negative loss values are retained if observed; monotonic degradation is not imposed. Ranking changes and class-specific losses are reported alongside aggregate robustness.
+
+This intervention changes ring availability, not the entire sensor. Ring-ID spacing has not been established as uniform in elevation, and subsampling does not reproduce another sensor's optics, firing pattern, noise, or field of view. It is not a fog or snow simulation. The training interface also permits selecting lower-density prepared data, but matched-density retraining would be a separately labeled experiment rather than evidence for frozen-checkpoint robustness.
+
+\section{Efficiency Measurement and Trade-offs}
+\label{sec:efficiency}
+\subsection{Timing boundary}
+Measurements use a single GPU, evaluation mode, no gradient recording, and batch size one. The primary profiling precision is FP32; optional automatic mixed precision (AMP) is a separate condition. The profiler records the GPU, PyTorch and CUDA versions, seed, and TensorFloat-32 (TF32) flags. The label FP32 refers to tensor precision; actual TF32 settings are retained in the report and must be fixed consistently across compared runs.
+
+We define the following measured components:
+\begin{align}
+T_{\mathrm{E2E}}&=T_{\mathrm{prep}}+T_{\mathrm{H2D}}+T_{\mathrm{forward}},\\
+T_{\mathrm{forward}}&=T_{\mathrm{feature/head/decoding/NMS}}.
+\end{align}
+$T_{\mathrm{prep}}$ includes loading a prepared NumPy frame, CPU preprocessing, and collation. $T_{\mathrm{H2D}}$ includes host-to-device transfer and synchronization. Full-forward timing includes detector execution, head decoding, and configured postprocessing. Because some heads perform NMS internally, the present implementation does not report an architecture-dependent network-only versus NMS-only split.
+
+The end-to-end boundary excludes sensor acquisition, raw Boreas binary conversion, weight loading, visualization, and result serialization. Its precise interpretation is \emph{prepared-frame end-to-end detector latency}. It should not be described as total deployed sensor-to-control latency. All components are measured with a synchronized CPU wall clock; warmup and synchronization follow established CUDA benchmarking considerations \cite{pytorch_benchmark}.
+
+\subsection{Sampling, latency, and memory}
+The profiler selects 200 frame indices evenly across validation index order, or all frames if fewer are available. It executes the first 20 selected frames for warmup and then measures the full selected set, including those frames. Runs are serial without asynchronous input overlap. Selection is deterministic and must remain identical across detectors. File-system caching and operating-system load can affect preprocessing latency and are disclosed as measurement limitations.
+
+Mean, median (p50), and 95th-percentile (p95) latency are reported for each component and the total. The reported serial service rate is
+\begin{equation}
+\operatorname{FPS}_{\mathrm{serial}}=\frac{1000}{\overline T_{\mathrm{E2E}}\ \text{in milliseconds}}.
+\end{equation}
+It is the reciprocal of mean batch-one service time, not a saturated multi-batch throughput measurement. The p95 statistic indicates variation within the selected frame sample; neither it nor mean FPS establishes a hard real-time guarantee.
+
+The profiler resets CUDA peak-memory statistics before each measured frame and reports the maximum allocated and reserved peaks in MiB. Allocated memory includes resident model tensors and frame-specific allocations; reserved memory also reflects the CUDA allocator's caching behavior. Neither quantity is total GPU process memory as measured externally. Total parameter count is reported separately. The active-voxel statistic is the median number of occupied input cells after preprocessing; it is not the sum of active sites across all sparse layers.
+
+A single generic FLOP counter is omitted from the primary comparison because sparse operation counts depend on occupied sites and their distribution. Measured latency and memory are the principal cost metrics. Any later MAC/FLOP result requires a specified counting convention, representative inputs, and coverage of sparse operators. Training GPU-hours are desirable supplementary measurements, but must be derived from recorded training duration and device count rather than inferred from epoch count.
+
+\subsection{Pareto efficiency and constrained selection}
+For accuracy $a_m$ and serial service rate $f_m$, model $u$ dominates model $v$ if $a_u\geq a_v$ and $f_u\geq f_v$, with at least one strict inequality. For allocated memory $g_m$, replace the speed inequality with $g_u\leq g_v$. The resulting nondominated configurations define the accuracy--speed and accuracy--memory frontiers.
+
+A resource-constrained recommendation takes the form
+\begin{equation}
+\underset{m}{\operatorname{argmax}}\ a_m\quad\text{subject to}\quad T^{95}_m\leq L_{\max},\ g_m\leq G_{\max},
+\end{equation}
+where the limits are chosen by the intended application. This provides a transparent selection rule without assuming a universal best detector. Frontiers use the same local AP40, beam condition, inference precision, and measured timing boundary. The current standard metrics script profiles nominal 128-beam input; beam-specific frontiers require additional profiling rather than reusing dense-input latency.
+
+\section{Experimental Procedure}
+\label{sec:experiments}
+\subsection{Training budget and checkpoint policy}
+The generated configurations use Adam with a one-cycle schedule, weight decay 0.01, and 80 epochs. Table~\ref{tab:config} records model-specific settings. The baseline configuration specifies batch size one per GPU; command-line overrides are supported. The principal comparison requires one common effective training batch size and training precision across all included runs. \pending{Confirm the actual effective batch size and AMP/FP32 setting from run metadata, and enter them in Table~\ref{tab:environment}.} A run with a different batch size or precision must be rerun or reported as an explicitly different condition.
+
+The fixed epoch-80 checkpoint is used for the primary comparison. Selecting a separate best-validation checkpoint for each beam condition would introduce an additional selection mechanism and is excluded. An equal epoch budget gives equal nominal passes through the training partition; it does not give equal wall-clock time, GPU-hours, optimizer updates under different batch sizes, or equal convergence. Learning curves should be inspected to identify models that remain undertrained, and this limitation should accompany the final results.
+
+The current seed interface accepts an explicit seed, with 42 as the default when deterministic-seed setup is enabled. A run-directory name alone is insufficient proof of the historical training seed. Sparse CUDA operations may remain nondeterministic even after random generators are seeded. \pending{Verify each historical run from logs or metadata. For the final repeated experiment, use a disclosed common seed list, such as 42, 43, and 44, and distinguish single-run results from seed averages.} Repeated training is a planned statistical extension; this draft does not assert that it has been executed.
+
+\subsection{Configuration provenance and tuning}
+The six fixed configurations form the baseline comparison. Additional tuning is not assumed to have occurred. The final paper must state the number of trials per detector, selection objective, and validation use. If no search is conducted, the comparison should be labeled a fixed-configuration benchmark with zero additional search trials. If tuning is introduced, the search budget must be specified prospectively and applied consistently.
+
+For reproducibility, the release should include the source revision, configuration hashes, data-manifest hashes, checkpoint identities, random-seed metadata, and environment lock information. Configuration changes made after a checkpoint was trained must be distinguished from the configuration that produced that checkpoint. A common final prediction export protocol can be reapplied for evaluation, but must be documented separately from training provenance. Existing predictions exported with a different score cutoff or output cap require regeneration before entering the main comparison.
+
+\begin{table}[t]
+\centering\small
+\caption{Conditions that must be finalized from the actual benchmark runs. Unfilled fields are not assumed to be equal.}
+\label{tab:environment}
+\begin{tabular}{p{0.44\columnwidth}p{0.43\columnwidth}}
+\toprule
+Condition & Value / policy\\
+\midrule
+Train input & Nominal 128 beams\\
+Epoch / checkpoint & 80 / fixed epoch 80\\
+Effective training batch & \TBD{} (generated default: 1/GPU)\\
+Training precision & \TBD{} (shared across runs)\\
+Training seed list & \TBD{} (explicit metadata)\\
+Inference batch / precision & 1 / FP32; TF32 flags \TBD\\
+Profiling frames / warmup & 200 / 20\\
+GPU / driver & \TBD\\
+CPU / storage / operating system & \TBD\\
+Python / PyTorch / CUDA & \TBD\\
+spconv / cumm versions & \TBD\\
+OpenPCDet revision / hashes & \TBD\\
+Additional tuning trials & \TBD\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Evaluation sequence and record keeping}
+Each checkpoint is evaluated on all 1,326 validation frames at each beam condition. The evaluation loader uses batch size one; the standard command uses two data-loader workers. Predictions are saved with frame identifiers, boxes, classes, and scores. The local evaluator verifies that prediction identifiers match validation metadata exactly and rejects duplicate or missing prediction frames. Class AP40, distance-bin scores, operating-point metrics, and Misc ignore counts are then computed from the same predictions.
+
+Dense-input efficiency profiling uses the same checkpoint and the same selected frame indices across models. It runs independently of training and outside debug synchronization modes. Accuracy inference is kept in the shared FP32 condition for the principal comparison; a precision change requires recomputing both accuracy and profiling results. Result records should carry metric versions and inference configuration hashes so that local AP40, supplementary evaluator outputs, and performance measurements cannot be mixed silently.
+
+\subsection{Planned uncertainty and sensitivity analyses}
+The final analysis should report seed-wise values and, when repeated training is completed, the mean and standard deviation across seeds. To estimate uncertainty associated with the validation sample, we plan a paired cluster bootstrap over the eight validation intervals, using 2,000 resamples and percentile 95\% intervals. Each resample includes whole intervals, preserving within-interval temporal dependence. AP must be recomputed from pooled detections and annotations in each resample; averaging interval AP values is not equivalent. Repeatedly sampled intervals require unique copied frame identifiers to preserve matching semantics. The same resamples are used for both detectors when estimating AP differences or beam-induced losses.
+
+This analysis is planned and not presently part of the standard metrics script. Eight clusters provide limited support for bootstrap inference, and spatial overlap can introduce dependence between clusters. Uncertainty intervals should therefore be interpreted cautiously, with seed variability and interval-level descriptive results shown separately. The paper does not claim population-level significance from thousands of highly correlated frames.
+
+Sensitivity analyses should examine score-export cutoff, prediction cap, and distance-bin boundaries without replacing the prespecified primary result. In particular, a shifted-boundary or boundary-exclusion analysis can reveal how strongly RQ3 depends on localization near 20, 40, and 60 meters. Model-specific NMS thresholds remain potential contributors to ranking differences. \pending{Execute and report these additional analyses, or explicitly identify them as future work in the submitted version.}
+
+\section{Results and Analysis}
+\label{sec:results}
+\textbf{Completion note.} All entries in this section are reserved for validated outputs of the common protocol. No current detector results are used in this draft. The following text defines how the completed evidence will answer each research question; statements of a winning configuration or numerical improvement must be added only after measurement.
+
+\subsection{RQ1: Overall and class-specific accuracy}
+Table~\ref{tab:main} organizes overall and class-wise accuracy alongside computational cost. The unweighted mean gives each target class equal importance, while individual AP values reveal whether a high mean is driven by one class. For this partition, Cyclist has substantially fewer labeled instances than the other target classes (Table~\ref{tab:data}); its differences require particular attention to support and uncertainty.
+
+The final comparison will state the highest overall local AP40, the class-wise leaders, and paired differences between competitive configurations. A detector with stronger Car AP but weaker Pedestrian or Cyclist AP should be described through that trade-off rather than declared uniformly superior. The PointPillars--Lite comparison is interpreted as a within-architecture capacity comparison. \pending{Insert the measured ordering, class-wise differences, and confidence intervals; identify whether the accuracy differences exceed the observed seed variation.}
+
+\begin{table*}[t]
+\centering\scriptsize
+\caption{Primary comparison on nominal 128-beam validation input. AP values are local 3D AP40 percentages at class IoU thresholds 0.7/0.5/0.5. Timing is batch-one prepared-frame end-to-end latency under the shared FP32/TF32 condition. Memory is peak CUDA allocated MiB. No values have been filled.}
+\label{tab:main}
+\resizebox{\textwidth}{!}{\begin{tabular}{lrrrrrrrrrr}
+\toprule
+Model & Params (M) & Mean (ms) & p50 (ms) & p95 (ms) & Serial FPS & Memory & Car AP & Ped. AP & Cyc. AP & mAP\\
+\midrule
+PointPillars & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+SECOND & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+CenterPoint & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+VoxelNeXt & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+PV-RCNN & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+PointPillars Lite & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\subsection{RQ2: Computational cost and Pareto frontiers}
+Table~\ref{tab:timing} decomposes latency according to the common timing boundary. This separates CPU and transfer overhead from full-forward execution without assuming that all architectures expose the same internal postprocessing boundary. A lower parameter count need not yield a lower end-to-end latency: preprocessing, sparse occupancy, memory movement, and decoder cost also contribute. This statement describes the interpretation of the metric, not an observed result for a particular detector.
+
+Figure~\ref{fig:pareto} will show the measured nondominated sets. A model can lie on the accuracy--speed frontier while being dominated in accuracy--memory space. Recommendations will therefore identify the resource constraint and the measured hardware. The final discussion will also consider p95 latency; configurations with similar mean service rates may have different upper-tail behavior. \pending{Insert the measured bottlenecks, frontier members, and example selections under explicitly stated latency and memory budgets.}
+
+\begin{table*}[t]
+\centering\small
+\caption{Efficiency decomposition at 128-beam input. Component entries are mean/p50/p95 milliseconds. Occupancy counts occupied input cells only. Training GPU-hours require recorded duration and are supplementary pending measurements.}
+\label{tab:timing}
+\resizebox{\textwidth}{!}{\begin{tabular}{lccccrr}
+\toprule
+Model & Input/preprocess & H2D transfer & Full forward & E2E & Input cells (median) & Train GPU-h\\
+\midrule
+PointPillars & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+SECOND & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+CenterPoint & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+VoxelNeXt & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+PV-RCNN & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+PointPillars Lite & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}{0.47\textwidth}\centering
+\figplaceholder{45mm}{(a) $x$: serial E2E FPS; $y$: local 3D mAP40.\\Plot six configurations, label precision, and connect only nondominated points.}
+\end{minipage}\hfill
+\begin{minipage}{0.47\textwidth}\centering
+\figplaceholder{45mm}{(b) $x$: peak allocated CUDA memory (MiB); $y$: local 3D mAP40.\\Show the accuracy--memory frontier under the same inference condition.}
+\end{minipage}
+\caption{Planned Pareto analysis on 128-beam input. No illustrative performance points are plotted. Accuracy uncertainty can be displayed when repeated or bootstrap measurements are available.}
+\label{fig:pareto}
+\end{figure*}
+
+\subsection{RQ3: Distance-dependent accuracy}
+Table~\ref{tab:range} reports range-stratified means, and the accompanying class-resolved analysis will use Table~\ref{tab:support}. The unbounded notation for the final bin refers only to centers inside the annotation crop. Longer-distance scores must not be extrapolated beyond this domain.
+
+A change in range ranking can indicate different sensitivity to sparse observations, localization errors, or class composition. It cannot by itself isolate which mechanism caused the difference. The completed analysis should compare class-specific slopes and paired near-to-far differences and inspect errors around bin boundaries. \pending{Report which configurations preserve the most class-specific accuracy at longer distances, quantify near-to-far losses, and discuss support and boundary sensitivity.}
+
+\begin{table}[t]
+\centering\small
+\caption{Local 3D mAP40 by radial center distance on 128-beam input. Class-resolved AP and uncertainty should accompany this aggregate table in supplementary material. Distances are in meters.}
+\label{tab:range}
+\begin{tabular}{lrrrr}
+\toprule
+Model & 0--20 & 20--40 & 40--60 & $\geq60$\\
+\midrule
+PointPillars & \TBD & \TBD & \TBD & \TBD\\
+SECOND & \TBD & \TBD & \TBD & \TBD\\
+CenterPoint & \TBD & \TBD & \TBD & \TBD\\
+VoxelNeXt & \TBD & \TBD & \TBD & \TBD\\
+PV-RCNN & \TBD & \TBD & \TBD & \TBD\\
+PointPillars Lite & \TBD & \TBD & \TBD & \TBD\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{RQ4: Frozen-checkpoint sparsity robustness}
+Table~\ref{tab:robustness} reports accuracy for the four nested ring conditions. The same dense-trained checkpoint is used across each row. Absolute dense-input accuracy and relative retention answer different questions: a model with a small relative loss can still have a low sparse-input AP, while a high dense-input AP can mask a large degradation.
+
+The primary comparison therefore considers sparse-input AP, percentage-point loss, and per-class retention jointly. The full predictions permit an interaction analysis of range and retained rings under the same local metric. The expected information loss motivates the experiment but is not a requirement that every measured score decrease monotonically. \pending{Insert observed losses and ranking changes, identify the most affected classes and ranges, and assess whether the differences persist across seeds or paired interval resamples.}
+
+\begin{table*}[t]
+\centering\small
+\caption{Frozen-checkpoint beam-subset evaluation: local 3D mAP40 in percent and losses in percentage points (pp). Every row uses one checkpoint trained on nominal 128-beam input. No fog/snow scores are implied by these columns.}
+\label{tab:robustness}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Model & 128 rings & 64 rings & 32 rings & 16 rings & $\Delta_{64}$ (pp) & $\Delta_{32}$ (pp) & $\Delta_{16}$ (pp)\\
+\midrule
+PointPillars & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+SECOND & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+CenterPoint & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+VoxelNeXt & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+PV-RCNN & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+PointPillars Lite & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure}[t]
+\centering
+\figplaceholder{40mm}{Three class-specific panels.\\$x$: retained nominal rings (128, 64, 32, 16).\\$y$: AP40 or relative retention.\\Use one curve per configuration and disclose uncertainty.}
+\caption{Planned class-specific sparsity response. The horizontal conditions are deterministic ring subsets, not independently acquired sensors.}
+\label{fig:sparsity}
+\end{figure}
+
+\subsection{Error analysis and qualitative evidence}
+Qualitative examples will compare the same frames, camera viewpoint where available for illustration, spatial crop, and displayed score threshold. Selection should follow disclosed categories such as distant objects, crowded scenes, partial occlusion, and dense-versus-sparse disagreement, rather than selecting only successful detections. Ground truth and predictions should be visually distinct, and any camera overlay should be identified as a visualization aid rather than a model input.
+
+\begin{figure*}[t]
+\centering
+\figplaceholder{40mm}{Insert aligned point-cloud views for the same validation frame: ground truth; selected detector predictions at 128 rings; predictions from the same checkpoints at 16 rings.\\Include far pedestrians/cyclists, a false positive, and a missed object. State frame IDs and display thresholds.}
+\caption{Reserved qualitative comparison. Frame selection and visual styling must be shared across detectors and beam conditions.}
+\label{fig:qualitative}
+\end{figure*}
+
+\pending{Add measured TP/FP/FN and precision/recall/F1 for every class and configuration, using the template in Appendix~\ref{app:operating}. Select representative failure cases and describe observed geometric errors without attributing unsupported causal mechanisms.}
+
+\section{Discussion}
+\subsection{Interpreting detector trade-offs}
+The benchmark is designed to separate four practical criteria that are often collapsed into a single ranking. Overall AP describes class-averaged recognition and localization under one metric. Range-stratified AP describes how performance varies within the shared annotation domain. Frozen-checkpoint ring-subset scores describe sensitivity to a specific sampling intervention. Prepared-frame latency and memory describe resource demand on the measured system. None of these quantities alone determines suitability for an application.
+
+A configuration-level result can reflect architecture, capacity, discretization, optimizer settings, decoder behavior, and truncation. The PointPillars--Lite pairing provides a narrower capacity comparison, while comparisons across the other models encompass several simultaneous design differences. Claims about a representation family should therefore be phrased as evidence from the tested configurations. A broader causal study would require controlled ablations or multiple representatives per family.
+
+The final analysis should connect the observed Pareto frontiers to sparse-input and far-range behavior. For example, a configuration selected under a memory budget may have a different robustness profile from the maximum-AP configuration. Such a statement requires measured evidence, not an assumed correlation between model size and robustness. \pending{Synthesize the completed tables into two or three evidence-supported detector-selection recommendations, each with its operating assumptions.}
+
+\subsection{What the sparsity experiment establishes}
+Deterministic nested subsets support a paired comparison because frame identity and ground truth remain fixed. They remove one source of variation associated with random point dropping. Their interpretation remains specific to the chosen ring pattern and dense-trained checkpoint. A robust response to this pattern does not establish robustness to missing contiguous elevation bands, nonuniform sensor layouts, or weather-dependent attenuation. Prior density and beam-loss studies motivate these distinctions \cite{griesbacher2025beamdensity,feng2026beamloss}.
+
+Matched-density retraining, alternative ring offsets, and sensor-specific sampling patterns would be useful extensions. They must be distinguished from the primary experiment because they change the intervention or the training distribution. Similarly, adding fog or snow requires separate corruption definitions or labeled weather observations; nominal beam reduction is not a substitute for weather evaluation.
+
+\subsection{Reproducibility and practical reporting}
+A reusable benchmark depends on clear measurement boundaries and machine-readable records. Reporting a model's tensor-forward time beside another model's preprocessing-inclusive time would invalidate a speed comparison. The full-forward boundary used here avoids ambiguity from model-specific internal NMS placement. Component latency and occupancy remain useful for diagnosing bottlenecks without presenting a partial operation count as a complete computational cost.
+
+Exact environment information, inference settings, and checkpoint provenance are required to reproduce the final frontier. The recorded seed is also essential: a folder named after a seed does not establish the seed used by an older training script. These details should be resolved before the results are consolidated. The resulting recommendations are intended to be reproducible for the disclosed configurations, rather than universal rankings for every GPU or software release.
+
+\section{Limitations and Threats to Validity}
+\label{sec:limitations}
+\textbf{Data coverage.} The annotated subset used here does not cover the full multi-season detection problem. The fixed validation intervals may share scene structure with training, and the two-second temporal buffer does not guarantee geographic separation. The official test split is excluded, so all claims concern local validation. Repeated development decisions using this validation set can introduce selection bias; the history of such decisions must be disclosed.
+
+\textbf{Configuration coverage.} The study includes five established architectures and one channel-reduced baseline, with a finite training budget. It omits other detector designs and cannot assert that a family is universally superior. Model-specific learning rates, grid representations, proposal processing, and NMS thresholds limit architectural causal interpretation. Equal epochs do not establish equal convergence or equal computational expenditure.
+
+\textbf{Metric conventions.} Local AP40 is not the official Boreas score. Misc ignore handling, independent center-bin filtering, output caps, and the prediction export cutoff affect results. Range scores are sensitive to boundary assignment. Macro-averaging must disclose unsupported classes when subsets become too small. Legacy synthetic image boxes prevent interpretation of genuine KITTI difficulty or camera-detection metrics.
+
+\textbf{Sampling realism.} Ring-ID subsampling does not recreate a different physical LiDAR, and one retained pattern per severity cannot characterize all possible beam failures. Evaluation preserves labels even for objects with no retained points, making the result a measurement of information removal under fixed targets. The experiment does not establish weather robustness.
+
+\textbf{Hardware and uncertainty.} Latency depends on CPU, storage caching, GPU, software kernels, precision settings, and concurrent workloads. The 200-frame sample provides a finite characterization of latency tails. Reserved CUDA memory is allocator-dependent. A single training seed cannot quantify optimization variability, and eight validation clusters constrain statistical inference. Planned repetitions and sensitivity studies remain necessary before empirical claims are finalized.
+
+\section{Conclusion}
+This paper specifies a systematic LiDAR detector benchmark on Boreas-Objects-V1, covering class-wise 3D accuracy, batch-one computational cost, distance dependence, and frozen-checkpoint sensitivity to deterministic ring subsampling. The protocol compares PointPillars, SECOND, CenterPoint, VoxelNeXt, PV-RCNN, and a reduced-channel PointPillars baseline under a shared data partition and explicitly disclosed configuration differences. A local AP40 definition and a common prepared-frame inference boundary provide the basis for interpretable Pareto comparisons.
+
+\pending{Complete the conclusion with the principal measured accuracy--efficiency trade-off, the most relevant range or class effect, and the observed sparsity losses, including uncertainty. Do not name a winning detector until results are available.} Future extensions can incorporate independently labeled adverse-weather data, additional sensor sampling patterns, and controlled configuration ablations. Their inclusion would broaden the evidence beyond the present local-validation protocol.
+
+\section*{Data and Code Availability}
+Boreas data and its development kit are available through the official project resources \cite{boreas_site,boreas_aws,pyboreas}. The dataset is accessed under its published license; our derived frame lists do not transfer ownership of the source data. OpenPCDet is the underlying detection framework \cite{openpcdet2020}. The benchmark's preparation, configuration generation, evaluation, profiling, and reporting scripts are present in the project. \pending{Insert an accessible benchmark repository or archived release URL, revision, license information, and links to the exact split/configuration manifests before submission. Public release is not claimed by this draft.}
+
+\section*{Acknowledgments and Declarations}
+\pending{Insert actual funding and acknowledgments, author contributions, and any venue-required competing-interest or AI-assistance declarations. Do not infer the authors' institutions or funding.}
+
+\appendix
+\section{Configuration Details}
+\label{app:config}
+Table~\ref{tab:config} records the current generated settings. All use the shared three-class dataset and augmentation described in Section~\ref{sec:benchmark}. The one-cycle schedule uses \texttt{PCT\_START}=0.4, \texttt{DIV\_FACTOR}=10, and momentum parameters $(0.95,0.85)$. A configuration hash and training-run manifest remain necessary to prove the settings of any historical checkpoint.
+
+\begin{table*}[t]
+\centering\small
+\caption{Current configuration snapshot. Occupancy caps apply to both training and evaluation; max points is per input cell. NMS threshold is the configured final detector threshold, not the accuracy-matching IoU threshold.}
+\label{tab:config}
+\resizebox{\textwidth}{!}{\begin{tabular}{lrrrrr}
+\toprule
+Model & Learning rate & Gradient norm clip & Max points/cell & Max input cells & NMS threshold\\
+\midrule
+PointPillars & 0.003 & 10 & 32 & 80,000 & 0.01\\
+SECOND & 0.003 & 10 & 10 & 200,000 & 0.85\\
+CenterPoint & 0.003 & 35 & 10 & 200,000 & 0.01\\
+VoxelNeXt & 0.001 & 10 & 10 & 200,000 & 0.20\\
+PV-RCNN & 0.010 & 10 & 10 & 200,000 & 0.10\\
+PointPillars Lite & 0.003 & 10 & 32 & 80,000 & 0.01\\
+\bottomrule
+\end{tabular}}
+\end{table*}
+
+\section{Operating-point Table Template}
+\label{app:operating}
+Table~\ref{tab:operating} illustrates the required per-class reporting for one configuration and beam condition. Duplicate this template for every included condition in supplementary material. The main body should discuss the most informative differences without conflating score-threshold F1 with AP integrated over recall.
+
+\begin{table}[t]
+\centering\small
+\caption{Per-class operating point at score 0.1. Configuration/beam condition: \TBD. Counts use the local same-class IoU and Misc ignore rules. Rates may be shown as percentages with units stated.}
+\label{tab:operating}
+\begin{tabular}{lrrrrrr}
+\toprule
+Class & TP & FP & FN & Prec. & Recall & F1\\
+\midrule
+Car & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+Pedestrian & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+Cyclist & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Artifact and Completion Checklist}
+\label{app:checklist}
+\textbf{Editorial appendix; remove before submission.} The working manuscript is standalone and its figures are deliberate placeholders. The following items must be completed without altering the disclosed distinction between implemented and planned procedures:
+\begin{enumerate}
+\item Replace author, affiliation, funding, declaration, and release-link placeholders with verified information.
+\item Archive the ordered official interval list, frame IDs, data-manifest hashes, source revision, and configuration hashes.
+\item Confirm common training batch and precision; audit actual historical seeds; separate any incompatible runs.
+\item Regenerate predictions under the shared score cutoff 0.001 and current candidate/output caps. Use local AP40 consistently in accuracy, range, sparsity, and Pareto tables.
+\item Fill Tables~\ref{tab:main}--\ref{tab:robustness} from validated records and provide per-class operating metrics, range AP, and retention in supplementary material.
+\item Record complete hardware/software conditions and TF32 settings. Collect training duration if GPU-hours are reported.
+\item Execute repeated-seed, bootstrap, and sensitivity procedures if they are to be described as completed analyses; otherwise revise their wording and limit statistical conclusions.
+\item Replace figure boxes with actual vector plots or documented qualitative examples. Fill the abstract, results interpretations, discussion recommendations, and conclusion from measured evidence.
+\item Maintain the scope: local validation, sunny-condition detection annotations, and deterministic ring-subset robustness. Add separate methods and evidence before making weather or official-test claims.
+\end{enumerate}
+
+\clearpage
+\begin{thebibliography}{99}
+
+\bibitem{lang2019pointpillars} Alex H. Lang, Sourabh Vora, Holger Caesar, Lubing Zhou, Jiong Yang, Oscar Beijbom. ``PointPillars: Fast Encoders for Object Detection from Point Clouds.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2019. \url{https://arxiv.org/abs/1812.05784}.
+
+\bibitem{yan2018second} Yan Yan, Yuxing Mao, Bo Li. ``SECOND: Sparsely Embedded Convolutional Detection.'' \textit{Sensors}, vol. 18, no. 10, Art. no. 3337, 2018. DOI: \href{https://doi.org/10.3390/s18103337}{10.3390/s18103337}. \url{https://www.mdpi.com/1424-8220/18/10/3337}.
+
+\bibitem{yin2021centerpoint} Tianwei Yin, Xingyi Zhou, Philipp Krähenbühl. ``Center-based 3D Object Detection and Tracking.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2021. \url{https://arxiv.org/abs/2006.11275}.
+
+\bibitem{chen2023voxelnext} Yukang Chen, Jianhui Liu, Xiangyu Zhang, Xiaojuan Qi, Jiaya Jia. ``VoxelNeXt: Fully Sparse VoxelNet for 3D Object Detection and Tracking.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2023. \url{https://arxiv.org/abs/2303.11301}.
+
+\bibitem{shi2020pvrcnn} Shaoshuai Shi, Chaoxu Guo, Li Jiang, Zhe Wang, Jianping Shi, Xiaogang Wang, Hongsheng Li. ``PV-RCNN: Point-Voxel Feature Set Abstraction for 3D Object Detection.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2020. \url{https://arxiv.org/abs/1912.13192}.
+
+\bibitem{burnett2023boreas} Keenan Burnett, David J. Yoon, Yuchen Wu, Andrew Z. Li, Haowei Zhang, Shichen Lu, Jingxing Qian, Wei-Kang Tseng, Andrew Lambert, Keith Y. K. Leung, Angela P. Schoellig, Timothy D. Barfoot. ``Boreas: A multi-season autonomous driving dataset.'' \textit{The International Journal of Robotics Research}, vol. 42, no. 1-2, pp. 33--42, 2023. DOI: \href{https://doi.org/10.1177/02783649231160195}{10.1177/02783649231160195}. \url{https://journals.sagepub.com/doi/10.1177/02783649231160195}.
+
+\bibitem{wei2022lidardistillation} Yi Wei, Zibu Wei, Yongming Rao, Jiaxin Li, Jie Zhou, Jiwen Lu. ``LiDAR Distillation: Bridging the Beam-Induced Domain Gap for 3D Object Detection.'' \textit{European Conference on Computer Vision (ECCV)}, 2022. \url{https://arxiv.org/abs/2203.14956}.
+
+\bibitem{griesbacher2025beamdensity} Christoph Griesbacher, Christian Fruhwirth-Reisinger. ``An Investigation of Beam Density on LiDAR Object Detection Performance.'' \textit{28th Computer Vision Winter Workshop (CVWW)}, 2025. DOI: \href{https://doi.org/10.3217/978-3-99161-022-9-002}{10.3217/978-3-99161-022-9-002}. \url{https://arxiv.org/abs/2503.15087}.
+
+\bibitem{kong2023robo3d} Lingdong Kong, Youquan Liu, Xin Li, Runnan Chen, Wenwei Zhang, Jiawei Ren, Liang Pan, Kai Chen, Ziwei Liu. ``Robo3D: Towards Robust and Reliable 3D Perception against Corruptions.'' \textit{IEEE/CVF International Conference on Computer Vision (ICCV)}, 2023. \url{https://arxiv.org/abs/2303.17597}.
+
+\bibitem{dong2023corruptions} Yinpeng Dong, Caixin Kang, Jinlai Zhang, Zijian Zhu, Yikai Wang, Xiao Yang, Hang Su, Xingxing Wei, Jun Zhu. ``Benchmarking Robustness of 3D Object Detection to Common Corruptions.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2023. \url{https://openaccess.thecvf.com/content/CVPR2023/html/Dong_Benchmarking_Robustness_of_3D_Object_Detection_to_Common_Corruptions_CVPR_2023_paper.html}.
+
+\bibitem{shi2022pillarnet} Guangsheng Shi, Ruifeng Li, Chao Ma. ``PillarNet: Real-Time and High-Performance Pillar-based 3D Object Detection.'' \textit{European Conference on Computer Vision (ECCV)}, 2022. \url{https://arxiv.org/abs/2205.07403}.
+
+\bibitem{geiger2012kitti} Andreas Geiger, Philip Lenz, Raquel Urtasun. ``Are we ready for Autonomous Driving? The KITTI Vision Benchmark Suite.'' \textit{IEEE Conference on Computer Vision and Pattern Recognition (CVPR)}, 2012. \url{https://www.cvlibs.net/publications/Geiger2012CVPR.pdf}.
+
+\bibitem{caesar2020nuscenes} Holger Caesar, Varun Bankiti, Alex H. Lang, Sourabh Vora, Venice Erin Liong, Qiang Xu, Anush Krishnan, Yu Pan, Giancarlo Baldan, Oscar Beijbom. ``nuScenes: A Multimodal Dataset for Autonomous Driving.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2020. \url{https://openaccess.thecvf.com/content_CVPR_2020/html/Caesar_nuScenes_A_Multimodal_Dataset_for_Autonomous_Driving_CVPR_2020_paper.html}.
+
+\bibitem{sun2020waymo} Pei Sun, \textit{et al.}. ``Scalability in Perception for Autonomous Driving: Waymo Open Dataset.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2020. \url{https://arxiv.org/abs/1912.04838}.
+
+\bibitem{kitti_eval} ``KITTI Object Detection Evaluation.'' \url{https://www.cvlibs.net/datasets/kitti/eval_object.php}. Accessed 2026-10-07.
+
+\bibitem{pitropov2021cadc} Matthew Pitropov, Danson Evan Garcia, Jason Rebello, Michael Smart, Carlos Wang, Krzysztof Czarnecki, Steven Waslander. ``Canadian adverse driving conditions dataset.'' \textit{The International Journal of Robotics Research}, 2021. \url{https://arxiv.org/abs/2001.10117}.
+
+\bibitem{gupta2025allweather} Himanshu Gupta, Achim J. Lilienthal, Henrik Andreasson. ``Evaluating LiDAR Perception Algorithms for All-Weather Autonomy.'' \textit{Sensors}, vol. 25, no. 24, Art. no. 7436, 2025. DOI: \href{https://doi.org/10.3390/s25247436}{10.3390/s25247436}. \url{https://pmc.ncbi.nlm.nih.gov/articles/PMC12736427/}.
+
+\bibitem{matteazzi2026augmentation} Andrea Matteazzi, Michael Arnold, Dietmar Tutsch. ``Augmentation of LiDAR Scenes with Adverse Weather Conditions Using Latent Diffusion Models.'' \textit{Neural Information Processing (ICONIP 2025)}, vol. 2756, pp. 198--212, 2026. DOI: \href{https://doi.org/10.1007/978-981-95-4097-6_14}{10.1007/978-981-95-4097-6\_14}. \url{https://link.springer.com/chapter/10.1007/978-981-95-4097-6_14}.
+
+\bibitem{boreas_awc} ``Boreas 3D Object Detection Benchmark for Adverse Weather Conditions (B-3DOD-B-AWC).'' \url{https://github.com/matteandre/B-3DOD-B-AWC}. Accessed 2026-10-07.
+
+\bibitem{eskandar2024generalization} George Eskandar, Chongzhe Zhang, Abhishek Kaushik, Karim Guirguis, Mohamed Sayed, Bin Yang. ``An Empirical Study of the Generalization Ability of Lidar 3D Object Detectors to Unseen Domains.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)}, 2024. \url{https://arxiv.org/abs/2402.17562}.
+
+\bibitem{feng2026beamloss} Weicong Feng, Yiqiao Li, Jie Wei. ``Impact of LiDAR beam loss on 3D object detection: A systematic analysis of vulnerable road user safety.'' \textit{Pattern Recognition Letters}, vol. 205, pp. 155--161, 2026. DOI: \href{https://doi.org/10.1016/j.patrec.2026.04.030}{10.1016/j.patrec.2026.04.030}. \url{https://www.sciencedirect.com/science/article/abs/pii/S0167865526001534}.
+
+\bibitem{pyboreas} ``pyboreas devkit.'' \url{https://github.com/utiasASRL/pyboreas}. Accessed 2026-10-07.
+
+\bibitem{openpcdet2020} OpenPCDet Development Team. ``OpenPCDet: An Open-source Toolbox for 3D Object Detection from Point Clouds.'' 2020. \url{https://github.com/open-mmlab/OpenPCDet}. Accessed 2026-10-07.
+
+\bibitem{pytorch_benchmark} ``PyTorch Benchmark recipe.'' \url{https://docs.pytorch.org/tutorials/recipes/recipes/benchmark}. Accessed 2026-10-07.
+
+\bibitem{boreas_site} ``The Boreas Dataset.'' \url{https://www.boreas.utias.utoronto.ca/}. Accessed 2026-10-07.
+
+\bibitem{boreas_aws} ``Boreas Autonomous Driving Dataset --- AWS registry.'' \url{https://registry.opendata.aws/boreas/}. Accessed 2026-10-07.
+\end{thebibliography}
+\end{document}
