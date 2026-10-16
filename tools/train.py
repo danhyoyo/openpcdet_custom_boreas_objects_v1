@@ -49,7 +49,7 @@ def parse_config():
     
     parser.add_argument('--use_tqdm_to_record', action='store_true', default=False, help='if True, the intermediate losses will not be logged to file, only tqdm will be used')
     parser.add_argument('--logger_iter_interval', type=int, default=50, help='')
-    parser.add_argument('--ckpt_save_time_interval', type=int, default=300, help='in terms of seconds')
+    parser.add_argument('--ckpt_save_time_interval', type=int, default=0, help='Optional mid-epoch checkpoint interval in seconds; 0 disables it (default)')
     parser.add_argument('--wo_gpu_stat', action='store_true', help='')
     precision = parser.add_mutually_exclusive_group()
     precision.add_argument('--use_amp', action='store_true', help='Use mixed precision training')
@@ -59,6 +59,10 @@ def parse_config():
     parser.add_argument('--range_eval', action='store_true', help='Report Boreas AP40 for radial distance bins after evaluation')
     parser.add_argument("--boreas_beams", type=int, choices=[128, 64, 32, 16], default=128, help="Select prepared Boreas beam data for train and validation (default: 128)")
     args = parser.parse_args()
+    if args.ckpt_save_interval < 1 or args.max_ckpt_save_num < 1:
+        parser.error('Checkpoint epoch interval and retention count must be positive')
+    if args.ckpt_save_time_interval < 0:
+        parser.error('--ckpt_save_time_interval must be nonnegative; use 0 to disable')
 
     cfg_from_yaml_file(args.cfg_file, cfg)
     cfg.TAG = Path(args.cfg_file).stem

@@ -11,7 +11,7 @@ from pcdet.utils import common_utils, commu_utils
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False, 
                     use_logger_to_record=False, logger=None, logger_iter_interval=50, cur_epoch=None, 
-                    total_epochs=None, ckpt_save_dir=None, ckpt_save_time_interval=300, show_gpu_stat=False, use_amp=False):
+                    total_epochs=None, ckpt_save_dir=None, ckpt_save_time_interval=0, show_gpu_stat=False, use_amp=False):
     if total_it_each_epoch == len(train_loader):
         dataloader_iter = iter(train_loader)
 
@@ -134,7 +134,8 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
             
             # save intermediate ckpt every {ckpt_save_time_interval} seconds         
             time_past_this_epoch = pbar.format_dict['elapsed']
-            if time_past_this_epoch // ckpt_save_time_interval >= ckpt_save_cnt:
+            if (ckpt_save_time_interval is not None and ckpt_save_time_interval > 0
+                    and time_past_this_epoch // ckpt_save_time_interval >= ckpt_save_cnt):
                 ckpt_name = ckpt_save_dir / 'latest_model'
                 save_checkpoint(
                     checkpoint_state(model, optimizer, cur_epoch, accumulated_iter), filename=ckpt_name,
@@ -151,7 +152,7 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
                 lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
                 merge_all_iters_to_one_epoch=False, use_amp=False,
-                use_logger_to_record=False, logger=None, logger_iter_interval=None, ckpt_save_time_interval=None, show_gpu_stat=False, cfg=None):
+                use_logger_to_record=False, logger=None, logger_iter_interval=None, ckpt_save_time_interval=0, show_gpu_stat=False, cfg=None):
     accumulated_iter = start_iter
 
     # use for disable data augmentation hook
