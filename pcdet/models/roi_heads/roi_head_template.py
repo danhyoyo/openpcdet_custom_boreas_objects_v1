@@ -203,7 +203,11 @@ class RoIHeadTemplate(nn.Module):
         rcnn_cls_labels = forward_ret_dict['rcnn_cls_labels'].view(-1)
         if loss_cfgs.CLS_LOSS == 'BinaryCrossEntropy':
             rcnn_cls_flat = rcnn_cls.view(-1)
-            batch_loss_cls = F.binary_cross_entropy(torch.sigmoid(rcnn_cls_flat), rcnn_cls_labels.float(), reduction='none')
+            # Fused sigmoid+BCE is numerically stable and supported by autocast.
+            # Ignored labels are masked below; keep their BCE targets in [0, 1].
+            batch_loss_cls = F.binary_cross_entropy_with_logits(
+                rcnn_cls_flat, rcnn_cls_labels.float().clamp_min(0), reduction='none'
+            )
             cls_valid_mask = (rcnn_cls_labels >= 0).float()
             rcnn_loss_cls = (batch_loss_cls * cls_valid_mask).sum() / torch.clamp(cls_valid_mask.sum(), min=1.0)
         elif loss_cfgs.CLS_LOSS == 'CrossEntropy':

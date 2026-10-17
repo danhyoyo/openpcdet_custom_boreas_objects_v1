@@ -1,0 +1,17 @@
+{
+  "models": 6,
+  "training_seed": 42,
+  "checkpoints_per_configuration": 1,
+  "validated_conditions": 48,
+  "labels": 34,
+  "citations": 29,
+  "static_references_ok": true,
+  "environments_balanced": true,
+  "braces_balanced": true,
+  "kendall_removed": true,
+  "calibration_in_appendix": true,
+  "compiled": false,
+  "table_column_checks": 13,
+  "table_numeric_rows_verified": 30,
+  "class_ap_plot_series_verified": 18
+}

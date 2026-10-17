@@ -9,30 +9,37 @@ from html import escape
 from pathlib import Path
 
 MODELS = ("pointpillar", "second", "centerpoint", "voxelnext",
-          "pv_rcnn", "pointpillar_lite")
+          "pv_rcnn", "pointpillar_lite", "dsvt", "pr_dsvt")
 
 
-def gather(root: Path, tag: str) -> list[dict]:
+def gather(root: Path, tag: str, run_tags=None) -> list[dict]:
     rows = []
     comparison_signature = None
     for model in MODELS:
-        folder = root / model / tag
+        if run_tags is not None and model not in run_tags:
+            continue
+        actual_tag = run_tags[model] if run_tags is not None else tag
+        folder = root / model / actual_tag
         accuracy = folder / "range_ap.json"
-        profile = folder / "profile.json"
+        profile = folder / "profile_128.json"
+        if not profile.is_file():
+            profile = folder / "profile.json"
         if not accuracy.is_file() or not profile.is_file():
             continue
         ap = json.loads(accuracy.read_text())
         timing = json.loads(profile.read_text())
         signature = (ap.get("protocol_version"), timing["precision"], timing["gpu"],
-                     timing.get("tf32_matmul"), timing.get("tf32_cudnn"))
+                     timing.get("tf32_matmul"), timing.get("tf32_cudnn"), timing.get("torch_version"),
+                     timing.get("cuda_version"), timing.get("frames"), timing.get("warmup_frames"),
+                     timing.get("repeats", 1))
         if ap.get("protocol_version") != "local_ap40_v1":
             raise ValueError(f"Re-evaluate stale metric report for {model}/{tag}")
         if comparison_signature is None:
             comparison_signature = signature
         elif signature != comparison_signature:
-            raise ValueError("Comparison requires the same AP protocol, inference precision, GPU and TF32 settings")
+            raise ValueError("Comparison requires the same AP protocol, precision, GPU, TF32, software and profiling sample settings")
         row = {
-            "model": model,
+            "model": model, "tag": actual_tag,
             "mAP40": ap["ranges"]["all"]["mAP40"],
             "FPS": timing["fps_from_mean_end_to_end"],
             "latency_mean_ms": timing["end_to_end"]["mean_ms"],
@@ -41,6 +48,8 @@ def gather(root: Path, tag: str) -> list[dict]:
             "latency_p50_ms": timing["end_to_end"]["p50_ms"],
             "latency_p95_ms": timing["end_to_end"]["p95_ms"],
             "GPU_MiB": timing["peak_cuda_allocated_mib"],
+            "GPU_reserved_MiB": timing.get("peak_cuda_reserved_mib"),
+            "input_points_median": timing.get("input_points", {}).get("p50"),
             "parameters": timing["parameters"],
             "forward_including_nms_mean_ms": timing["model_forward_including_postprocess"]["mean_ms"],
         }
@@ -136,9 +145,146 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=Path("../output/boreas_models"))
     parser.add_argument("--tag", default="seed42_beam128")
     parser.add_argument("--out", type=Path, default=Path("../output/boreas_summary"))
+    parser.add_argument('--runs', type=Path, help='Optional CSV model,tag for one run/model with different folder names; descriptive, not seed audited')
     args = parser.parse_args()
-    rows = gather(args.root, args.tag)
+    run_tags = None
+    if args.runs:
+        with args.runs.open() as stream:
+            records = list(csv.DictReader(stream))
+        if len({r['model'] for r in records}) != len(records):
+            raise ValueError('One-run summary requires exactly one tag/model; use study.py for multiple seeds')
+        if any(r['model'] not in MODELS for r in records):
+            raise ValueError('Unknown model in run CSV')
+        run_tags = {r['model']: r['tag'] for r in records}
+    rows = gather(args.root, args.tag, run_tags)
+    try:
+        from .study import ranking_analysis, write_csv
+    except ImportError:
+        from study import ranking_analysis, write_csv
+    scores = {'beam128': {r['model']: r['mAP40'] for r in rows}}
+    density, calibration = [], []
+    extended_signature = None
+    for row in rows:
+        folder = args.root / row['model'] / row['tag']
+        for beam in (128, 64, 32, 16):
+            ap_path = folder / ('range_ap.json' if beam == 128 else f'range_ap_{beam}.json')
+            if ap_path.exists():
+                ap = json.loads(ap_path.read_text())
+                if ap.get('protocol_version') != 'local_ap40_v1':
+                    raise ValueError(f'Stale beam metric: {ap_path}')
+                entry = ap['ranges']['all']
+                scores.setdefault(f'beam{beam}', {})[row['model']] = entry['mAP40']
+                for name, cls in entry['classes'].items():
+                    if cls['AP40'] is not None:
+                        scores.setdefault(f'beam{beam}_{name}', {})[row['model']] = cls['AP40']
+                if beam == 128:
+                    for band, range_entry in ap['ranges'].items():
+                        if band == 'all': continue
+                        scores.setdefault(f'range_{band}', {})[row['model']] = range_entry['mAP40']
+                        for name, cls in range_entry['classes'].items():
+                            if cls['AP40'] is not None:
+                                scores.setdefault(f'range_{band}_{name}', {})[row['model']] = cls['AP40']
+            path = folder / f'extended_{beam}.json'
+            if not path.exists(): continue
+            extra = json.loads(path.read_text())
+            if extra.get('protocol_version') != 'density_calibration_v1':
+                raise ValueError(f'Stale extended metric: {path}')
+            signature = (extra['truth_sha256'], extra['calibration_bins'], extra['operating_score'],
+                         json.dumps(extra['density_bins']), extra['verified_inference'])
+            if extended_signature is None:
+                extended_signature = signature
+            elif signature != extended_signature:
+                raise ValueError('Extended reports differ in GT, binning, score threshold or verification status')
+            for name, entry in extra['classes'].items():
+                calibration.append({'model':row['model'],'beam':beam,'class':name,
+                                    **{k:v for k,v in entry['calibration'].items() if k!='bins'},
+                                    'recall':entry['operating_point']['recall'],
+                                    'verified_inference':extra['verified_inference']})
+                for mode in ('density_fixed128','density_actual'):
+                    for band, groups in entry[mode].items():
+                        for group, counts in groups.items():
+                            density.append({'model':row['model'],'beam':beam,'class':name,
+                                            'grouping':mode,'range':band,'points':group,**counts})
     args.out.mkdir(parents=True, exist_ok=True)
+    ranking = ranking_analysis(scores)
+    ranking['note'] = 'One-tag descriptive comparison; folder tags do not establish a common training seed. Use study.py for audited multi-seed analysis.'
+    (args.out / 'ranking_stability.json').write_text(json.dumps(ranking, indent=2) + '\n')
+    write_csv(args.out / 'density_recall.csv', density)
+    write_csv(args.out / 'calibration.csv', calibration)
+    sparse_efficiency = []
+    profile_signatures = {}
+    for row in rows:
+        folder = args.root / row['model'] / row['tag']
+        for beam in (128, 64, 32, 16):
+            profile_path = folder / f'profile_{beam}.json'
+            if beam == 128 and not profile_path.exists():
+                profile_path = folder / 'profile.json'
+            ap_path = folder / ('range_ap.json' if beam == 128 else f'range_ap_{beam}.json')
+            if not profile_path.exists() or not ap_path.exists():
+                continue
+            timing = json.loads(profile_path.read_text())
+            ap = json.loads(ap_path.read_text())
+            signature = (timing['precision'], timing['gpu'], timing.get('tf32_matmul'),
+                         timing.get('tf32_cudnn'), timing.get('torch_version'),
+                         timing.get('cuda_version'), timing.get('frames'),
+                         timing.get('warmup_frames'), timing.get('repeats', 1))
+            if beam in profile_signatures and signature != profile_signatures[beam]:
+                raise ValueError(f'Beam-{beam} profiles use incompatible measurement conditions')
+            profile_signatures[beam] = signature
+            sparse_efficiency.append({
+                'model': row['model'], 'tag': row['tag'], 'beam': beam,
+                'mAP40': ap['ranges']['all']['mAP40'],
+                'latency_mean_ms': timing['end_to_end']['mean_ms'],
+                'latency_p50_ms': timing['end_to_end']['p50_ms'],
+                'latency_p95_ms': timing['end_to_end']['p95_ms'],
+                'FPS': timing['fps_from_mean_end_to_end'],
+                'GPU_allocated_MiB': timing['peak_cuda_allocated_mib'],
+                'GPU_reserved_MiB': timing.get('peak_cuda_reserved_mib'),
+                'input_points_mean': timing.get('input_points', {}).get('mean'),
+                'input_points_p50': timing.get('input_points', {}).get('p50'),
+                'active_voxels_mean': timing.get('active_voxels', {}).get('mean'),
+                'active_voxels_p50': timing.get('active_voxels', {}).get(
+                    'p50', timing.get('active_voxels_median')),
+                'repeats': timing.get('repeats', 1), 'frames': timing.get('frames')})
+    write_csv(args.out / 'sparsity_efficiency.csv', sparse_efficiency)
+    for beam in (128, 64, 32, 16):
+        selected = [item for item in sparse_efficiency if item['beam'] == beam]
+        if len(selected) >= 2:
+            svg_plot(selected, 'FPS', f'End-to-end FPS at {beam} rings (batch 1)', True,
+                     args.out / f'pareto_fps_map_{beam}ring.svg')
+            memory_rows = [{**item, 'GPU_MiB': item['GPU_allocated_MiB']}
+                           for item in selected]
+            svg_plot(memory_rows, 'GPU_MiB',
+                     f'Peak allocated CUDA memory at {beam} rings (MiB)', False,
+                     args.out / f'pareto_memory_map_{beam}ring.svg')
+    sensitivity_rows, sensitivity_scores = [], {}
+    sensitivity_grid = None
+    for row in rows:
+        path = args.root / row['model'] / row['tag'] / 'sensitivity_128.json'
+        if not path.exists():
+            continue
+        report = json.loads(path.read_text())
+        if report.get('protocol_version') != 'local_ap40_export_sensitivity_v1':
+            raise ValueError(f'Stale export-sensitivity report: {path}')
+        grid = {(entry['score_cutoff'], entry['output_cap'])
+                for entry in report['conditions']}
+        if sensitivity_grid is None:
+            sensitivity_grid = grid
+        elif grid != sensitivity_grid:
+            raise ValueError('Export-sensitivity reports use different cutoff/cap grids')
+        for entry in report['conditions']:
+            key = f"cutoff={entry['score_cutoff']:g},cap={entry['output_cap']}"
+            sensitivity_scores.setdefault(key, {})[row['model']] = entry['mAP40']
+            sensitivity_rows.append({'model': row['model'], 'tag': row['tag'], **entry})
+    write_csv(args.out / 'export_sensitivity.csv', sensitivity_rows)
+    if sensitivity_scores:
+        sensitivity_ranking = ranking_analysis(sensitivity_scores)
+        sensitivity_ranking['scope'] = (
+            'Stricter cutoffs/additional global post-export truncation on saved post-NMS '
+            'predictions; configured NMS-cap changes and reverse directions require fresh inference.'
+        )
+        (args.out / 'export_sensitivity_ranking.json').write_text(
+            json.dumps(sensitivity_ranking, indent=2) + '\n')
     with (args.out / "summary.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader()

@@ -137,6 +137,13 @@ def main():
                     'training_precision': 'AMP' if args.use_amp else 'FP32',
                     'batch_size_per_gpu': args.batch_size, 'total_gpus': total_gpus,
                     'epochs': args.epochs, 'arguments': vars(args), 'effective_config': cfg}
+        from boreas_benchmark.extended import sha256_file
+        data_root = Path(cfg.DATA_CONFIG.DATA_PATH)
+        metadata['split_sha256'] = {
+            split: sha256_file(data_root / 'ImageSets' / (split + '.txt'))
+            for split in ('train', 'val')
+            if (data_root / 'ImageSets' / (split + '.txt')).is_file()
+        }
         metadata_name = 'run_config_' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '.json'
         (output_dir / metadata_name).write_text(json.dumps(metadata, indent=2, default=str) + '\n')
     if cfg.LOCAL_RANK == 0:

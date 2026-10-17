@@ -1,0 +1,215 @@
+"""Dynamic voxel feature encoders implemented with stock PyTorch operations.
+
+The original OpenPCDet DynamicVoxelVFE depends on torch_scatter. This module
+keeps the same coordinate convention while also exposing optional
+angular/density features used by PR-DSVT.
+"""
+
+import math
+
+import torch
+import torch.nn as nn
+
+from .vfe_template import VFETemplate
+
+
+def _scatter_mean(src, inverse, count):
+    out = src.new_zeros((count, src.shape[1]))
+    out.index_add_(0, inverse, src)
+    counts = torch.bincount(inverse, minlength=count).to(src.dtype).unsqueeze(1)
+    return out / counts.clamp_min_(1)
+
+
+def _scatter_max(src, inverse, count):
+    out = src.new_full((count, src.shape[1]), -torch.inf)
+    index = inverse[:, None].expand(-1, src.shape[1])
+    out.scatter_reduce_(0, index, src, reduce='amax', include_self=True)
+    return out
+
+
+class TorchPFNLayer(nn.Module):
+    def __init__(self, in_channels, out_channels, use_norm=True, last_layer=False):
+        super().__init__()
+        self.last_layer = last_layer
+        hidden_channels = out_channels if last_layer else out_channels // 2
+        self.linear = nn.Linear(in_channels, hidden_channels, bias=not use_norm)
+        self.norm = (
+            nn.BatchNorm1d(hidden_channels, eps=1e-3, momentum=0.01)
+            if use_norm else nn.Identity()
+        )
+        self.relu = nn.ReLU()
+
+    def forward(self, features, inverse, voxel_count):
+        point_features = self.relu(self.norm(self.linear(features)))
+        voxel_features = _scatter_max(point_features, inverse, voxel_count)
+        if self.last_layer:
+            return voxel_features
+        return torch.cat((point_features, voxel_features[inverse]), dim=1)
+
+
+class TorchDynamicVoxelVFE(VFETemplate):
+    """Dynamic VFE with optional phase-robust angular and density features."""
+
+    def __init__(self, model_cfg, num_point_features, voxel_size, grid_size,
+                 point_cloud_range, **kwargs):
+        super().__init__(model_cfg=model_cfg)
+        self.use_norm = model_cfg.get('USE_NORM', True)
+        self.with_distance = model_cfg.get('WITH_DISTANCE', False)
+        self.use_absolute_xyz = model_cfg.get('USE_ABSLOTE_XYZ', True)
+        self.use_angular_features = model_cfg.get('USE_ANGULAR_FEATURES', False)
+        self.count_normalizer = float(model_cfg.get('COUNT_NORMALIZER', 128.0))
+        support_cfg = model_cfg.get('SUPPORT_ENCODING', {})
+        self.use_support_encoding = bool(support_cfg.get('ENABLED', False))
+        self.support_bins = int(support_cfg.get('NUM_BINS', 8))
+        if self.support_bins < 2:
+            raise ValueError('SUPPORT_ENCODING.NUM_BINS must be at least 2')
+
+        feature_dim = num_point_features + (6 if self.use_absolute_xyz else 3)
+        if self.with_distance:
+            feature_dim += 1
+        if self.use_angular_features:
+            # sin/cos(elevation), elevation residual, normalized log voxel count
+            feature_dim += 4
+
+        self.num_filters = list(model_cfg.NUM_FILTERS)
+        if not self.num_filters:
+            raise ValueError('NUM_FILTERS must contain at least one output width')
+        widths = [feature_dim] + self.num_filters
+        self.pfn_layers = nn.ModuleList([
+            TorchPFNLayer(
+                widths[index], widths[index + 1], self.use_norm,
+                last_layer=index == len(widths) - 2
+            )
+            for index in range(len(widths) - 1)
+        ])
+        if self.use_support_encoding:
+            support_hidden = int(support_cfg.get('HIDDEN_CHANNELS', 32))
+            self.support_residual_scale = float(
+                support_cfg.get('MAX_RESIDUAL_SCALE', 0.25)
+            )
+            elevation_range = support_cfg.get(
+                'ELEVATION_RANGE_DEG', [-30.0, 20.0]
+            )
+            self.support_elevation_min = math.radians(float(elevation_range[0]))
+            self.support_elevation_max = math.radians(float(elevation_range[1]))
+            if self.support_elevation_max <= self.support_elevation_min:
+                raise ValueError('SUPPORT_ENCODING elevation range must be increasing')
+            self.support_encoder = nn.Sequential(
+                nn.Linear(self.support_bins, support_hidden),
+                nn.ReLU(),
+                nn.Linear(support_hidden, self.num_filters[-1]),
+            )
+            # Preserve the baseline VFE at initialization.
+            nn.init.zeros_(self.support_encoder[-1].weight)
+            nn.init.zeros_(self.support_encoder[-1].bias)
+
+        self.register_buffer('grid_size', torch.as_tensor(grid_size, dtype=torch.long))
+        self.register_buffer('voxel_size', torch.as_tensor(voxel_size, dtype=torch.float32))
+        self.register_buffer(
+            'point_cloud_range', torch.as_tensor(point_cloud_range, dtype=torch.float32)
+        )
+        self.scale_xyz = int(grid_size[0] * grid_size[1] * grid_size[2])
+        self.scale_yz = int(grid_size[1] * grid_size[2])
+        self.scale_z = int(grid_size[2])
+
+    def get_output_feature_dim(self):
+        return self.num_filters[-1]
+
+    def forward(self, batch_dict, **kwargs):
+        points = batch_dict['points']
+        xyz = points[:, 1:4]
+        point_coords = torch.floor(
+            (xyz - self.point_cloud_range[:3]) / self.voxel_size
+        ).long()
+        valid = ((point_coords >= 0) & (point_coords < self.grid_size)).all(dim=1)
+        points = points[valid]
+        xyz = xyz[valid]
+        point_coords = point_coords[valid]
+        if points.shape[0] == 0:
+            raise RuntimeError('TorchDynamicVoxelVFE received no in-range points')
+
+        merged = (
+            points[:, 0].long() * self.scale_xyz
+            + point_coords[:, 0] * self.scale_yz
+            + point_coords[:, 1] * self.scale_z
+            + point_coords[:, 2]
+        )
+        unique, inverse, counts = torch.unique(
+            merged, sorted=True, return_inverse=True, return_counts=True
+        )
+        voxel_count = unique.numel()
+
+        xyz_mean = _scatter_mean(xyz, inverse, voxel_count)
+        cluster = xyz - xyz_mean[inverse]
+        centers = self.point_cloud_range[:3] + (
+            point_coords.to(xyz.dtype) + 0.5
+        ) * self.voxel_size
+        center_offset = xyz - centers
+
+        if self.use_absolute_xyz:
+            feature_parts = [points[:, 1:], cluster, center_offset]
+        else:
+            feature_parts = [points[:, 4:], cluster, center_offset]
+
+        horizontal_range = torch.linalg.vector_norm(xyz[:, :2], dim=1, keepdim=True)
+        distance = torch.linalg.vector_norm(xyz, dim=1, keepdim=True)
+        if self.with_distance:
+            feature_parts.append(distance)
+
+        if self.use_angular_features:
+            elevation = torch.atan2(xyz[:, 2:3], horizontal_range.clamp_min(1e-3))
+            elevation_mean = _scatter_mean(elevation, inverse, voxel_count)
+            elevation_residual = elevation - elevation_mean[inverse]
+            log_count = torch.log1p(counts.to(xyz.dtype)) / math.log1p(self.count_normalizer)
+            log_count = log_count.clamp(max=1.0)[inverse, None]
+            feature_parts.extend((
+                torch.sin(elevation), torch.cos(elevation), elevation_residual, log_count
+            ))
+
+        support_histogram = None
+        support_coverage = None
+        support_entropy = None
+        if self.use_support_encoding:
+            elevation = torch.atan2(xyz[:, 2], horizontal_range[:, 0].clamp_min(1e-3))
+            scaled = (elevation - self.support_elevation_min) / (
+                self.support_elevation_max - self.support_elevation_min
+            )
+            elevation_bin = torch.floor(scaled * self.support_bins).long()
+            elevation_bin = elevation_bin.clamp(0, self.support_bins - 1)
+            flat_bin = inverse * self.support_bins + elevation_bin
+            bin_counts = xyz.new_zeros(voxel_count * self.support_bins)
+            bin_counts.index_add_(0, flat_bin, torch.ones_like(flat_bin, dtype=xyz.dtype))
+            bin_counts = bin_counts.view(voxel_count, self.support_bins)
+
+            support_histogram = bin_counts / bin_counts.sum(
+                dim=1, keepdim=True
+            ).clamp_min(1.0)
+            support_coverage = (bin_counts > 0).to(xyz.dtype).mean(dim=1)
+            support_entropy = -(
+                support_histogram
+                * support_histogram.clamp_min(1e-6).log()
+            ).sum(dim=1) / math.log(self.support_bins)
+            support_input = torch.log1p(bin_counts) / math.log1p(
+                self.count_normalizer
+            )
+            support_input = support_input.clamp(max=1.0)
+
+        features = torch.cat(feature_parts, dim=1)
+        for layer in self.pfn_layers:
+            features = layer(features, inverse, voxel_count)
+        if self.use_support_encoding:
+            support_residual = torch.tanh(self.support_encoder(support_input))
+            features = features + self.support_residual_scale * support_residual
+
+        unique = unique.long()
+        voxel_coords = torch.stack((
+            unique // self.scale_xyz,
+            (unique % self.scale_xyz) // self.scale_yz,
+            (unique % self.scale_yz) // self.scale_z,
+            unique % self.scale_z,
+        ), dim=1)[:, [0, 3, 2, 1]].int()
+
+        batch_dict['voxel_features'] = features.contiguous()
+        batch_dict['pillar_features'] = features.contiguous()
+        batch_dict['voxel_coords'] = voxel_coords.contiguous()
+        return batch_dict

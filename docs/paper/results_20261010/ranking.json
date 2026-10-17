@@ -1,0 +1,478 @@
+[
+  {
+    "metric": "mAP40",
+    "comparison": "128_vs_64",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 1.0,
+    "concordant": 15,
+    "discordant": 0,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "mAP40",
+    "comparison": "128_vs_32",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 1.0,
+    "concordant": 15,
+    "discordant": 0,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "mAP40",
+    "comparison": "128_vs_16",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 1.0,
+    "concordant": 15,
+    "discordant": 0,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "mAP40",
+    "comparison": "all_vs_0-20m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.7333333333333333,
+    "concordant": 13,
+    "discordant": 2,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "mAP40",
+    "comparison": "all_vs_20-40m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 1.0,
+    "concordant": 15,
+    "discordant": 0,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "mAP40",
+    "comparison": "all_vs_40-60m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.7333333333333333,
+    "concordant": 13,
+    "discordant": 2,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "mAP40",
+    "comparison": "all_vs_60m+",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.4666666666666667,
+    "concordant": 11,
+    "discordant": 4,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Car",
+    "comparison": "128_vs_64",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.8666666666666667,
+    "concordant": 14,
+    "discordant": 1,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Car",
+    "comparison": "128_vs_32",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.6,
+    "concordant": 12,
+    "discordant": 3,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Car",
+    "comparison": "128_vs_16",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.3333333333333333,
+    "concordant": 10,
+    "discordant": 5,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Car",
+    "comparison": "all_vs_0-20m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.6,
+    "concordant": 12,
+    "discordant": 3,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Car",
+    "comparison": "all_vs_20-40m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.8666666666666667,
+    "concordant": 14,
+    "discordant": 1,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Car",
+    "comparison": "all_vs_40-60m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.3333333333333333,
+    "concordant": 10,
+    "discordant": 5,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Car",
+    "comparison": "all_vs_60m+",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.06666666666666667,
+    "concordant": 8,
+    "discordant": 7,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Pedestrian",
+    "comparison": "128_vs_64",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 1.0,
+    "concordant": 15,
+    "discordant": 0,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Pedestrian",
+    "comparison": "128_vs_32",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.7333333333333333,
+    "concordant": 13,
+    "discordant": 2,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Pedestrian",
+    "comparison": "128_vs_16",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.7333333333333333,
+    "concordant": 13,
+    "discordant": 2,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Pedestrian",
+    "comparison": "all_vs_0-20m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.8666666666666667,
+    "concordant": 14,
+    "discordant": 1,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Pedestrian",
+    "comparison": "all_vs_20-40m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 1.0,
+    "concordant": 15,
+    "discordant": 0,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Pedestrian",
+    "comparison": "all_vs_40-60m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 1.0,
+    "concordant": 15,
+    "discordant": 0,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Pedestrian",
+    "comparison": "all_vs_60m+",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.2,
+    "concordant": 9,
+    "discordant": 6,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Cyclist",
+    "comparison": "128_vs_64",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.3333333333333333,
+    "concordant": 10,
+    "discordant": 5,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Cyclist",
+    "comparison": "128_vs_32",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.6,
+    "concordant": 12,
+    "discordant": 3,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Cyclist",
+    "comparison": "128_vs_16",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.3333333333333333,
+    "concordant": 10,
+    "discordant": 5,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Cyclist",
+    "comparison": "all_vs_0-20m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.2,
+    "concordant": 9,
+    "discordant": 6,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Cyclist",
+    "comparison": "all_vs_20-40m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.6,
+    "concordant": 12,
+    "discordant": 3,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Cyclist",
+    "comparison": "all_vs_40-60m",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.4666666666666667,
+    "concordant": 11,
+    "discordant": 4,
+    "ties_first": 0,
+    "ties_second": 0
+  },
+  {
+    "metric": "Cyclist",
+    "comparison": "all_vs_60m+",
+    "models": [
+      "pointpillar",
+      "second",
+      "centerpoint",
+      "voxelnext",
+      "pv_rcnn",
+      "pointpillar_lite"
+    ],
+    "tau_b": 0.4666666666666667,
+    "concordant": 11,
+    "discordant": 4,
+    "ties_first": 0,
+    "ties_second": 0
+  }
+]

@@ -1,0 +1,7 @@
+model,tag
+pointpillar,seed666_beam128
+second,seed666_beam128
+centerpoint,seed666_beam128
+voxelnext,seed42_beam128
+pv_rcnn,seed42_beam128
+pointpillar_lite,seed42_beam128

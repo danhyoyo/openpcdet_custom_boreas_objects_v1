@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torch.autograd import Function, Variable
+from torch.autograd import Function
 
 from . import pointnet2_stack_cuda as pointnet2
 
@@ -8,6 +8,7 @@ from . import pointnet2_stack_cuda as pointnet2
 class BallQuery(Function):
 
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.float32)
     def forward(ctx, radius: float, nsample: int, xyz: torch.Tensor, xyz_batch_cnt: torch.Tensor,
                 new_xyz: torch.Tensor, new_xyz_batch_cnt):
         """
@@ -30,7 +31,7 @@ class BallQuery(Function):
 
         B = xyz_batch_cnt.shape[0]
         M = new_xyz.shape[0]
-        idx = torch.cuda.IntTensor(M, nsample).zero_()
+        idx = torch.zeros((M, nsample), device=xyz.device, dtype=torch.int32)
 
         pointnet2.ball_query_wrapper(B, M, radius, nsample, new_xyz, new_xyz_batch_cnt, xyz, xyz_batch_cnt, idx)
         empty_ball_mask = (idx[:, 0] == -1)
@@ -42,6 +43,7 @@ class BallQuery(Function):
         return idx, empty_ball_mask
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, a=None, b=None):
         return None, None, None, None, None, None
 
@@ -52,6 +54,7 @@ ball_query = BallQuery.apply
 class GroupingOperation(Function):
 
     @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.float32)
     def forward(ctx, features: torch.Tensor, features_batch_cnt: torch.Tensor,
                 idx: torch.Tensor, idx_batch_cnt: torch.Tensor):
         """
@@ -78,7 +81,9 @@ class GroupingOperation(Function):
         M, nsample = idx.size()
         N, C = features.size()
         B = idx_batch_cnt.shape[0]
-        output = torch.cuda.FloatTensor(M, C, nsample)
+        # The extension supports FP32 only; custom_fwd casts floating inputs
+        # under AMP and custom_bwd keeps its gradient kernel in FP32.
+        output = features.new_empty((M, C, nsample), dtype=torch.float32)
 
         pointnet2.group_points_wrapper(B, M, C, nsample, features, features_batch_cnt, idx, idx_batch_cnt, output)
 
@@ -86,6 +91,7 @@ class GroupingOperation(Function):
         return output
 
     @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
     def backward(ctx, grad_out: torch.Tensor):
         """
         Args:
@@ -98,11 +104,11 @@ class GroupingOperation(Function):
         B, N, idx, features_batch_cnt, idx_batch_cnt = ctx.for_backwards
 
         M, C, nsample = grad_out.size()
-        grad_features = Variable(torch.cuda.FloatTensor(N, C).zero_())
+        grad_features = grad_out.new_zeros((N, C), dtype=torch.float32)
 
-        grad_out_data = grad_out.data.contiguous()
+        grad_out_data = grad_out.float().contiguous()
         pointnet2.group_points_grad_wrapper(B, M, C, N, nsample, grad_out_data, idx,
-                                            idx_batch_cnt, features_batch_cnt, grad_features.data)
+                                            idx_batch_cnt, features_batch_cnt, grad_features)
         return grad_features, None, None, None
 
 

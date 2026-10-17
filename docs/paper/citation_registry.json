@@ -363,5 +363,33 @@
     "authority": 9,
     "checked_as_of": "2026-10-07",
     "limitations": "Corruption protocols and reproducibility reference; not currently implemented in our experiment."
+  },
+  {
+    "id": 29,
+    "key": "kuppers2020calibration",
+    "title": "Multivariate Confidence Calibration for Object Detection",
+    "year": 2020,
+    "url": "https://arxiv.org/abs/2004.13546",
+    "doi": "10.1109/CVPRW50498.2020.00171",
+    "source_type": "academic",
+    "accessibility": "public",
+    "authority": 9,
+    "checked_as_of": "2026-10-08",
+    "usage": "Confidence calibration methods and limitations",
+    "limitations": "Primary abstract/metadata checked. Our binary post-NMS 3D correctness ECE/Brier is explicitly specified and not claimed equivalent to multivariate D-ECE or localization-aware ECE."
+  },
+  {
+    "id": 30,
+    "key": "kuzucu2024calibration",
+    "title": "On Calibration of Object Detectors: Pitfalls, Evaluation and Baselines",
+    "year": 2024,
+    "url": "https://arxiv.org/abs/2405.20459",
+    "doi": "",
+    "source_type": "academic",
+    "accessibility": "public",
+    "authority": 9,
+    "checked_as_of": "2026-10-08",
+    "usage": "Confidence calibration methods and limitations",
+    "limitations": "Primary abstract/metadata checked. Our binary post-NMS 3D correctness ECE/Brier is explicitly specified and not claimed equivalent to multivariate D-ECE or localization-aware ECE."
   }
 ]

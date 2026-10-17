@@ -101,7 +101,12 @@ def boxes_from_label(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(boxes, np.float32).reshape(-1, 7), np.asarray(names, dtype="<U10")
 
 
-def beam_subset(points: np.ndarray, count: int) -> np.ndarray:
+def beam_subset(points: np.ndarray, count: int, phase: int = 0) -> np.ndarray:
+    if count not in (128, 64, 32, 16):
+        raise ValueError("Beam count must be 128, 64, 32, or 16")
+    modulus = 128 // count
+    if not 0 <= phase < modulus:
+        raise ValueError(f"Phase for {count} beams must be in [0, {modulus - 1}]")
     if count == 128:
         return points
     ring = points[:, 4]
@@ -110,10 +115,11 @@ def beam_subset(points: np.ndarray, count: int) -> np.ndarray:
         raise ValueError("Nonintegral LiDAR ring IDs")
     if np.any((rounded < 0) | (rounded > 127)):
         raise ValueError("LiDAR ring ID outside [0, 127]")
-    return points[(rounded.astype(np.int16) % (128 // count)) == 0]
+    return points[(rounded.astype(np.int16) % modulus) == phase]
 
 
-def prepare(source: Path, destination: Path, beams: int, maximum: int) -> None:
+def prepare(source: Path, destination: Path, beams: int, maximum: int,
+            phase: int = 0) -> None:
     # Import only the split definition: importing pyboreas itself pulls in
     # plotting extensions that may not match the local NumPy ABI.
     from importlib import metadata, util
@@ -126,8 +132,9 @@ def prepare(source: Path, destination: Path, beams: int, maximum: int) -> None:
     spec.loader.exec_module(module)
     obj_train = module.obj_train
 
-    if beams not in (128, 64, 32, 16):
-        raise ValueError("Beam count must be 128, 64, 32, or 16")
+    modulus = 128 // beams if beams in (128, 64, 32, 16) else 0
+    if beams not in (128, 64, 32, 16) or not 0 <= phase < modulus:
+        raise ValueError("Invalid beam count or modulo phase")
     raw = source / "boreas-objects-v1"
     labels_dir, lidar_dir = raw / "labels_detection", raw / "lidar"
     if not labels_dir.is_dir() or not lidar_dir.is_dir():
@@ -146,7 +153,8 @@ def prepare(source: Path, destination: Path, beams: int, maximum: int) -> None:
             return "train"
         return None
 
-    out = destination / str(beams)
+    condition = str(beams) if phase == 0 else f"{beams}_phase{phase}"
+    out = destination / condition
     for folder in ("points", "labels", "ImageSets"):
         (out / folder).mkdir(parents=True, exist_ok=True)
     ids = {"train": [], "val": []}
@@ -166,7 +174,7 @@ def prepare(source: Path, destination: Path, beams: int, maximum: int) -> None:
         data = np.fromfile(lidar, dtype=np.float32)
         if data.size % 6:
             raise ValueError(f"Bad 6-field LiDAR record: {lidar}")
-        points = beam_subset(data.reshape(-1, 6), beams)
+        points = beam_subset(data.reshape(-1, 6), beams, phase)
         point_counts.append(len(points))
         boxes, names = boxes_from_label(label)
         counts.update(names.tolist())
@@ -179,7 +187,7 @@ def prepare(source: Path, destination: Path, beams: int, maximum: int) -> None:
             for box, name in zip(boxes, names):
                 handle.write(" ".join(map(str, box.tolist())) + f" {name}\n")
         if sum(map(len, ids.values())) % 100 == 0:
-            print(f"Preparing {beams} beams: {sum(map(len, ids.values()))} frames", flush=True)
+            print(f"Preparing {beams} beams, phase {phase}: {sum(map(len, ids.values()))} frames", flush=True)
         ids[split].append(label.stem)
         infos[split].append({
             "point_cloud": {"num_features": 4, "lidar_idx": label.stem},
@@ -195,6 +203,9 @@ def prepare(source: Path, destination: Path, beams: int, maximum: int) -> None:
             pickle.dump(infos[split], handle, protocol=4)
     manifest = {
         "source": str(raw), "beam_count": beams,
+        "sampling_strategy": "ring_id_modulo",
+        "modulo": modulus, "phase": phase,
+        "retained_ring_ids": list(range(phase, 128, modulus)),
         "train_frames": len(ids["train"]), "val_frames": len(ids["val"]),
         "class_boxes": dict(counts), "purge_gap_seconds": 2,
         "split_class_range_boxes": dict(range_counts),
@@ -216,12 +227,14 @@ def main() -> None:
     make.add_argument("--source", type=Path, default=ROOT / "boreas")
     make.add_argument("--destination", type=Path, default=ROOT / "boreas_openpcdet")
     make.add_argument("--beams", type=int, default=128)
+    make.add_argument("--phase", type=int, default=0,
+                      help="Modulo phase in [0, 128/beams); phase 0 preserves legacy paths")
     make.add_argument("--max-frames", type=int, default=0)
     args = parser.parse_args()
     if args.command == "download":
         download(args.destination, args.plan)
     else:
-        prepare(args.source, args.destination, args.beams, args.max_frames)
+        prepare(args.source, args.destination, args.beams, args.max_frames, args.phase)
 
 
 if __name__ == "__main__":

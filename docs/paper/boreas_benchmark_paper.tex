@@ -1,41 +1,52 @@
 % Standalone working manuscript: no external images or .bib required.
-% Protocol snapshot: 2026-10-07. Empirical results intentionally omitted.
+% Condensed seed-42 single-checkpoint manuscript: 2026-10-14.
 \documentclass[10pt,twocolumn]{article}
 \usepackage[a4paper,margin=19mm,columnsep=7mm]{geometry}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
 \usepackage{amsmath,amssymb,booktabs,array,graphicx,xcolor}
+\graphicspath{{../../output/pdf/}}
+\usepackage{adjustbox}
+\usepackage[section]{placeins}
+\usepackage{dblfloatfix}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage[hyphens]{url}
 \usepackage[hidelinks]{hyperref}
 \usepackage{microtype}
 \setlength{\emergencystretch}{2em}
+\setcounter{topnumber}{3}
+\setcounter{dbltopnumber}{2}
+\renewcommand{\topfraction}{0.90}
+\renewcommand{\dbltopfraction}{0.90}
+\renewcommand{\textfraction}{0.05}
+\renewcommand{\floatpagefraction}{0.80}
+\renewcommand{\dblfloatpagefraction}{0.80}
 \newcommand{\TBD}{\textit{TBD}}
 \newcommand{\pending}[1]{\textcolor{blue!55!black}{\textit{[Pending: #1]}}}
 \newcommand{\ap}{\mathrm{AP}_{40}}
 \newcommand{\map}{\mathrm{mAP}_{40}}
 \newcommand{\figplaceholder}[2]{\fbox{\parbox[c][#1][c]{0.90\linewidth}{\centering\small\textbf{Figure placeholder}\\[6pt]#2}}}
-\title{Accuracy, Efficiency, and Sparsity Robustness of LiDAR 3D Object Detectors on Boreas-Objects-V1}
+\title{Accuracy and Efficiency of LiDAR 3D Object Detectors under Sparsity on Boreas-Objects-V1}
 \author{\textit{Author names to be completed}\\
 \small \textit{Affiliation, city, country to be completed}\\
 \small \textit{Corresponding author email to be completed}}
-\date{Working manuscript --- 7 October 2026}
+\date{Working manuscript --- 14 October 2026}
 \begin{document}
 \maketitle
 \begin{center}
-\small\fbox{\parbox{0.94\linewidth}{\textbf{Draft status.} This manuscript documents the implemented benchmark and the planned analysis. All detector results, uncertainty estimates, and empirical conclusions remain unfilled. Dataset counts describe the prepared data only. Blue notes and \TBD{} cells must be resolved before submission.}}
+\small\fbox{\parbox{0.94\linewidth}{\textbf{Draft status.} Six configurations, each represented by one seed-42 training run and its epoch-80 checkpoint, are evaluated in 114 validation conditions (19 per model). Training manifests verify seed 42 for all six; evaluations and profiling also use seed 42. No across-training-run variability or interval-bootstrap uncertainty is estimated.}}
 \end{center}
 
 \begin{abstract}
-High-resolution LiDAR provides detailed geometric observations, but detector selection requires balancing localization accuracy, inference cost, and sensitivity to changes in sampling density. We develop a systematic benchmark of six LiDAR-only detector configurations on Boreas-Objects-V1: PointPillars, SECOND, CenterPoint, VoxelNeXt, PV-RCNN, and a reduced-channel PointPillars baseline. The benchmark uses a fixed partition of the official training intervals into 29 training and eight validation intervals, with a two-second exclusion buffer, a shared spatial domain, three target classes, and a common augmentation family. Accuracy is measured using an explicitly specified local 3D IoU-based AP40 protocol. Computational performance is measured at batch size one using synchronized latency, including prepared-frame input, preprocessing, transfer, and full detector execution. Range-stratified evaluation separates objects into four distance bands. Sampling robustness is assessed by retaining deterministic subsets of 64, 32, and 16 ring IDs while evaluating the same checkpoint trained with nominal 128-beam input. Planned joint accuracy--speed and accuracy--memory analyses will identify configurations that satisfy different resource constraints. Although the broader Boreas dataset spans multiple seasons, the labeled subset used here restricts the scope to its annotated detection conditions. \pending{Insert the principal quantitative findings and their uncertainty after the benchmark is complete.} The study is designed to support reproducible detector selection without attributing performance differences solely to architecture or proposing a new detection model.
+We benchmark six LiDAR-only detector configurations on Boreas-Objects-V1 using one seed-42 epoch-80 checkpoint per model and a common 1,326-frame validation set. Accuracy is evaluated with local 3D AP40, recall, range, and fixed point-count cohorts; efficiency uses preprocessing-inclusive FP32 latency and memory. Robustness is tested without retraining through nested 128/64/32/16-ring subsets and elevation-matched VLP-16/VLP-32C profiles. PV-RCNN has the highest dense mAP40 (59.11\%) but requires 310.81 ms per prepared frame. SECOND is fastest (40.87 ms, 48.50\% mAP), while PointPillars Lite reaches 49.66\% at 46.32 ms with 74.82\% fewer parameters than PointPillars. At modulo-16 phase zero, only 13.51--30.79\% of dense mAP remains and Pedestrian recall falls to 14.57--32.01\%. Across all valid modulo offsets, 16-ring mean mAP ranges from 7.17\% to 20.03\%, and within-model min--max spreads reach 3.88--7.20 points. PointPillars leads the VLP-16 angular subset, whereas PV-RCNN remains best for VLP-32C. The contribution is a traceable joint analysis of accuracy, efficiency, object support, and two disclosed sparsity interventions on a common split. Results are descriptive because each configuration has one training realization; phase dispersion quantifies paired input-offset sensitivity, not training uncertainty.
 \end{abstract}
-\noindent\textbf{Keywords:} 3D object detection; LiDAR; Boreas; benchmarking; latency; beam sparsity; Pareto analysis.
+\noindent\textbf{Keywords:} 3D object detection; LiDAR; Boreas; benchmarking; latency; beam sparsity; elevation sampling; recall.
 
 \section{Introduction}
 LiDAR-based three-dimensional object detection estimates object categories, positions, dimensions, and orientations from point clouds. Its practical use requires more than a high aggregate accuracy score: a detector must also fit the available memory and process observations within an acceptable time budget. Established architectures make different choices about spatial discretization, feature extraction, prediction heads, and proposal refinement. PointPillars, SECOND, CenterPoint, VoxelNeXt, and PV-RCNN exemplify these choices \cite{lang2019pointpillars,yan2018second,yin2021centerpoint,chen2023voxelnext,shi2020pvrcnn}. Comparing their published scores directly does not isolate their behavior on the same data, implementation, and hardware.
 
-Boreas offers an opportunity to examine detection with dense 128-channel LiDAR observations \cite{burnett2023boreas}. However, using a dataset with multiple seasons does not automatically constitute an evaluation of detection across seasons. Our experiments use Boreas-Objects-V1 and its existing detection annotations; the weather coverage of these annotations defines the scope of our claims. We investigate detector accuracy, computational cost, distance dependence, and sensitivity to deterministic ring subsampling within this scope.
+Boreas offers an opportunity to examine detection with dense 128-channel LiDAR observations \cite{burnett2023boreas}. However, using a dataset with multiple seasons does not automatically constitute an evaluation of detection across seasons. Our experiments use Boreas-Objects-V1 and its existing detection annotations; the weather coverage of these annotations defines the scope of our claims. We investigate detector accuracy, computational cost, distance dependence, and sensitivity to deterministic ring removal and elevation-matched angular profiles within this scope.
 
 Distance and sampling density are complementary sources of variation. Objects farther from the sensor generally occupy fewer measured points, while removing rings changes the available vertical sampling throughout the scene. The effect depends on object geometry, occlusion, and the detector configuration. Prior work has already investigated beam-induced domain gaps and corruption robustness \cite{wei2022lidardistillation,griesbacher2025beamdensity,kong2023robo3d,dong2023corruptions}. Consequently, our contribution is a reproducible, dataset-specific evaluation protocol and a joint analysis of several operating criteria. We make no claim to introduce beam-density evaluation itself.
 
@@ -43,35 +54,37 @@ The benchmark addresses four research questions:
 \begin{enumerate}
 \item \textbf{RQ1: Accuracy.} How do the six configurations compare in overall and class-specific 3D detection accuracy on nominal 128-beam Boreas-Objects-V1 input?
 \item \textbf{RQ2: Efficiency.} What batch-one latency, memory, and parameter costs accompany their accuracy, and which configurations are Pareto efficient under the measured operating conditions?
-\item \textbf{RQ3: Range.} How do class-specific accuracy and detector rankings vary across radial distance bands?
-\item \textbf{RQ4: Sparsity.} How much accuracy is lost when a checkpoint trained on 128-beam input is evaluated on deterministic 64-, 32-, or 16-ring subsets?
+\item \textbf{RQ3: Range.} How do class-specific accuracy and detector rankings vary across radial distance bands, and how does recall vary with the number of points inside an object?
+\item \textbf{RQ4: Sparsity.} How do AP, recall, and model ordering change when a dense-trained checkpoint is evaluated on deterministic 64/32/16-ring subsets and elevation-matched target angular profiles?
 \end{enumerate}
 
-The study makes three methodological contributions. First, it specifies a shared data and evaluation protocol while exposing configuration differences that cannot reasonably be forced to be identical across architectures. Second, it links overall accuracy to distance and beam-subset behavior, retaining class support counts to make aggregate scores interpretable. Third, it measures a consistent inference boundary that includes preprocessing and detector postprocessing and uses these measurements for resource-constrained comparisons. The reduced-channel PointPillars configuration serves as a capacity baseline within an existing architecture.
+\textbf{Contribution.} The new contribution is a reproducible evaluation design that connects four views usually reported separately: detection accuracy, prepared-frame inference cost, object support by range and point count, and paired sparsity sensitivity. It also provides a controlled capacity comparison through PointPillars Lite and separates geometric decimation from target-angle matching with dense field-of-view controls. We do not claim a new detector, a new beam-density concept, or a complete physical-sensor simulation. All completed empirical claims use one seed-42 checkpoint per configuration, so small differences remain descriptive.
 
-The remainder of the paper reviews related work, defines the benchmark, describes training and measurement procedures, provides the structure of the empirical analysis, and discusses threats to validity. Because experiments are ongoing, empirical values and conclusions are explicitly marked for completion.
+The remainder of the paper reviews related work, defines the benchmark, describes training and measurement procedures, reports the completed single-seed comparison, and discusses threats to validity. All empirical values correspond to one checkpoint per configuration.
 
 \section{Related Work}
-\subsection{LiDAR detector architectures}
+
 PointPillars groups points into vertical columns, learns pillar features, and applies a two-dimensional convolutional backbone to a bird's-eye-view representation \cite{lang2019pointpillars}. SECOND uses sparse convolution over voxelized features \cite{yan2018second}. These approaches motivate a comparison between pillar and three-dimensional voxel representations under a common input domain. PillarNet further demonstrates that pillar-based detection is a broader architectural family rather than a single fixed accuracy--efficiency profile \cite{shi2022pillarnet}.
 
 CenterPoint represents objects through their centers and regresses their attributes \cite{yin2021centerpoint}. Our implementation uses the configured single-stage detector; the name does not imply that every component of the original detection-and-tracking system is evaluated. VoxelNeXt predicts from sparse voxel features \cite{chen2023voxelnext}; the benchmark configuration retains its configured decoding and non-maximum suppression (NMS). PV-RCNN combines voxel features with point-based feature abstraction and proposal refinement \cite{shi2020pvrcnn}. These categories overlap: representation, prediction-head design, and refinement are distinct dimensions. With one configuration per named model, the study compares complete detector configurations and cannot estimate a causal effect of an architectural family alone.
 
-\subsection{Datasets and evaluation conventions}
+
 KITTI, nuScenes, and the Waymo Open Dataset have established widely used evaluation settings for autonomous-driving perception \cite{geiger2012kitti,caesar2020nuscenes,sun2020waymo}. Their metrics, class definitions, and data distributions are not interchangeable. KITTI's current object-detection evaluation uses 40 recall positions \cite{kitti_eval}; adopting 40 positions does not make a custom matching implementation equivalent to KITTI or to an official Boreas score.
 
 Boreas is a multi-season autonomous-driving dataset \cite{burnett2023boreas}. This paper uses the sunny-condition annotations in Boreas-Objects-V1. A local validation subset is carved from official training intervals, and the official test intervals are not used. Accordingly, comparisons are internal to the disclosed partition. They do not establish a ranking on the official hidden test set or on unlabeled winter sequences.
 
 Adverse-weather research provides useful context but addresses an additional problem. CADC contains adverse driving conditions \cite{pitropov2021cadc}. Gupta et al. study all-weather LiDAR perception, including experiments using Boreas data \cite{gupta2025allweather}. Matteazzi et al. investigate adverse-weather augmentation with latent diffusion models \cite{matteazzi2026augmentation}, and the associated B-3DOD-B-AWC resource provides supplementary detection data \cite{boreas_awc}. These works preclude a general claim that LiDAR detection on Boreas has not been studied. Weather evaluation would require an explicitly incorporated labeled resource and a separate protocol; it is outside the present experiments.
 
-\subsection{Robustness and sensor-density variation}
+
 Robo3D and the common-corruption detection benchmark examine robustness beyond standard clean-data evaluation \cite{kong2023robo3d,dong2023corruptions}. Eskandar et al. investigate the interaction of architectural and training choices with generalization to unseen domains \cite{eskandar2024generalization}. Their findings motivate reporting augmentation, voxel encoding, and anchor choices alongside accuracy.
 
 LiDAR Distillation explicitly addresses beam-induced domain gaps \cite{wei2022lidardistillation}. Griesbacher and Fruhwirth-Reisinger investigate beam density, including dense 128-beam data \cite{griesbacher2025beamdensity}. Feng et al. study beam loss with a focus on vulnerable road users \cite{feng2026beamloss}. Our primary RQ4 design freezes the dense-input checkpoint and changes only the retained ring subset. It estimates sensitivity to this intervention, rather than performance after adaptation. Its intended value is the combination with class- and range-resolved accuracy and measured computational cost on a disclosed Boreas partition.
 
-\section{Benchmark Definition}
+
+
+\section{Experimental Design}
 \label{sec:benchmark}
-\subsection{Detection task and input representation}
+\subsection{Data and configurations}
 Each frame is a point set
 \begin{equation}
 \mathcal{P}=\{(x_i,y_i,z_i,I_i)\}_{i=1}^{N},
@@ -89,14 +102,14 @@ The shared point-cloud domain is
 \end{equation}
 The label exporter retains boxes whose centers satisfy $x,y\in[-75,75)$ and $z\in[-3,5)$. Thus, the annotation-center crop is slightly narrower than the point-cloud domain in the horizontal axes. This boundary convention is retained and disclosed. Models may subsequently apply their configured training-time box-range filters after augmentation. Intensity is exported without an additional normalization transform.
 
-\subsection{Temporal partition and data preparation}
+
 The partition uses the 37 official object-training temporal intervals listed by the Boreas development kit \cite{pyboreas}. Interval order is preserved. Zero-based indices $0,5,10,15,20,25,30,35$ define validation; the remaining 29 intervals define training. Entire intervals are assigned to a partition. Consecutive frames are not randomly distributed between training and validation.
 
 A training frame is removed if its timestamp is within two seconds of any validation interval. The prepared nominal 128-beam data contain 3,607 training and 1,326 validation frames (Table~\ref{tab:data}). The 16 official test intervals are excluded from this study. The split manifest, frame identifiers, interval list, and exclusion rule should accompany the benchmark release. \pending{Record the exact pyboreas version and the hash of the ordered interval list in the release manifest.}
 
-The temporal buffer reduces direct adjacency between training and validation observations. It does not guarantee spatial independence, because traversals may observe the same route or scene structure. This is a fixed local validation design, not an independent geographic test. The eight validation intervals are also the natural clustering units for the planned uncertainty analysis.
+The temporal buffer reduces direct adjacency between training and validation observations. It does not guarantee spatial independence, because traversals may observe the same route or scene structure. This is a fixed local validation design, not an independent geographic test. The eight validation intervals are the natural clustering units for any subsequent interval-level analysis.
 
-\begin{table}[t]
+\begin{table}[!tbp]
 \centering\small
 \caption{Prepared 128-beam dataset statistics. Counts refer to retained annotations before model-specific training augmentation. Misc boxes are retained for evaluation ignore handling and are not a target class. These are dataset statistics, not detector results.}
 \label{tab:data}
@@ -116,14 +129,14 @@ Misc boxes & 2,274 & 817\\
 
 The conversion reads the raw six-field point representation, retains XYZ and intensity, and creates OpenPCDet-compatible frame arrays and annotation metadata. For each beam condition, identical frame identifiers, class names, and ground-truth boxes are retained. Objects are not removed from evaluation merely because subsampling leaves them with few or no observed points. Such cases are part of the robustness experiment. Input membership and annotation consistency are checked before inference.
 
-\subsection{Detector configurations}
+
 All detectors are implemented within the same OpenPCDet checkout \cite{openpcdet2020}. Table~\ref{tab:models} lists the configurations. The benchmark adapts existing templates to the three Boreas target classes and the shared spatial domain. Anchor-based models use class-wise median box dimensions and median bottom heights computed from training annotations only. No validation annotations enter these statistics.
 
-\begin{table*}[t]
+\begin{table*}[!tbp]
 \centering\small
 \caption{Evaluated configurations. The table describes this checkout, not every variant of the corresponding published model. Spatial cell sizes are in meters. The last column describes the benchmark's principal prediction path.}
 \label{tab:models}
-\resizebox{\textwidth}{!}{\begin{tabular}{llll}
+\begin{adjustbox}{max width=\textwidth}\begin{tabular}{llll}
 \toprule
 Configuration & Representation & Cell size $(x,y,z)$ & Prediction / refinement\\
 \midrule
@@ -134,351 +147,251 @@ VoxelNeXt & Sparse voxel & $(0.2,0.2,0.2)$ & Sparse center prediction, configure
 PV-RCNN & Voxel and point & $(0.2,0.2,0.2)$ & Proposal generation and point--voxel refinement\\
 PointPillars Lite & Reduced-channel pillar / BEV & $(0.2,0.2,8.0)$ & Anchor-based, single stage\\
 \bottomrule
-\end{tabular}}
+\end{tabular}\end{adjustbox}
 \end{table*}
 
 PointPillars Lite halves the pillar feature width from 64 to 32, changes the BEV backbone widths from $(64,128,256)$ to $(32,64,128)$, and changes the three upsampling output widths from 128 to 64 each. Layer counts and the remaining parent configuration are retained. This provides a controlled capacity comparison with PointPillars. It is not introduced as a new architecture or given an independent novelty claim.
 
 The shared input domain does not imply identical retained point sets inside each network. Pillar configurations allow 32 points per cell and 80,000 occupied cells; voxel configurations allow 10 points per cell and 200,000 occupied cells. Truncation and discretization are part of each tested configuration. Identical limits would not equate the representations, but unreported limits could confound interpretation.
 
-\subsection{Shared and model-specific conditions}
+
 All configurations share frame partitions, target classes, raw input features, spatial domain, augmentation family, epoch budget, and evaluation code. Augmentation consists of world flips along the $x$ and $y$ axes, rotation sampled within $[-\pi/4,\pi/4]$, and scaling within $[0.95,1.05]$. Point order is shuffled during training and retained during evaluation. Ground-truth database sampling, weather augmentation, and beam-drop augmentation are absent from the primary experiment.
 
 Model-specific learning rates, clipping thresholds, and NMS thresholds are preserved and explicitly reported (Appendix~\ref{app:config}). The current final NMS candidate and output caps are 4,096 and 500, respectively. Proposal-stage processing in PV-RCNN and decoder-specific candidate selection remain model-specific. These choices define a comparison of configured systems under shared external conditions. They do not support an assertion that all low-level processing choices are identical.
 
-\begin{figure}[t]
-\centering
-\figplaceholder{36mm}{Boreas-Objects-V1\\$\downarrow$ fixed temporal partition and purge\\shared training protocol $\rightarrow$ six checkpoints\\$\downarrow$ same validation frames at 128/64/32/16 rings\\local AP40, range analysis, and batch-one profiling}
-\caption{Benchmark workflow. Replace this box with a vector diagram using the same processing stages.}
-\label{fig:workflow}
-\end{figure}
+\FloatBarrier
+\subsection{Evaluation protocol}
+The primary score is local 3D $\mathrm{AP}_{40}$ at IoU 0.7 for Car and 0.5 for Pedestrian/Cyclist. Predictions are globally score-ordered and matched to an unmatched same-class target; unmatched predictions overlapping Misc are ignored. Overall $\mathrm{mAP}_{40}$ is the unweighted class mean. Precision, recall, and F1 use score 0.1.
 
-\section{Evaluation Metrics}
-\label{sec:metrics}
-\subsection{Local 3D AP40 protocol}
-The principal score is an explicitly defined local validation metric, version \texttt{local\_ap40\_v1}. For two oriented upright boxes $b$ and $g$,
-\begin{equation}
-\operatorname{IoU}_{3D}(b,g)=\frac{V(b\cap g)}{V(b)+V(g)-V(b\cap g)}.
-\end{equation}
-The intersection is obtained from the intersection area of the rotated horizontal rectangles multiplied by their vertical overlap. Class-specific IoU thresholds are $\tau_{\mathrm{Car}}=0.7$ and $\tau_{\mathrm{Pedestrian}}=\tau_{\mathrm{Cyclist}}=0.5$.
+Range bins are $[0,20)$, $[20,40)$, $[40,60)$, and $[60,\infty)$ m. Point-count cohorts are 0, 1--5, 6--20, 21--50, 51--100, and at least 101 points. Primary cohort membership is fixed from dense input so sparse conditions cannot reassign difficult objects. Full matching, AP, range-boundary, and cohort definitions are retained in Appendix~\ref{app:metrics}.
 
-Predictions for a class are ordered globally by descending score, with frame identifier and original prediction index as deterministic tie breakers. Each prediction is matched to the highest-IoU unmatched ground-truth box of the same class in the same frame. A match at or above the class threshold is a true positive (TP). An unmatched prediction overlapping any Misc box at that threshold is ignored for every target class. Other unmatched predictions are false positives (FP). A target ground-truth box can be matched once; an unmatched target box contributes to false negatives (FN). Misc boxes are never target positives. This is a local ignore policy, not an assertion of equivalence to official dataset handling.
+Modulo subsets keep $r_i\bmod(128/K)=p$ for $K\in\{64,32,16\}$ and every valid remainder $p\in\{0,\ldots,128/K-1\}$, giving 2/4/8 phases at 64/32/16 rings. The dense condition retains all 128 rings. Elevation matching uses source-ring medians estimated from 20 training frames and an order-preserving one-to-one assignment to published VLP-16/VLP-32C profiles \cite{velodyne_profiles}. Dense controls retain all source rings inside the same vertical FOV. These interventions preserve checkpoints and labels; they do not simulate horizontal resolution, firing timing, return physics, noise, or intensity transfer.
 
-For the nonignored ordered detections, cumulative precision and recall are
-\begin{equation}
-P_k=\frac{\sum_{i\leq k}\mathrm{TP}_i}{\sum_{i\leq k}(\mathrm{TP}_i+\mathrm{FP}_i)},\quad R_k=\frac{\sum_{i\leq k}\mathrm{TP}_i}{N_{\mathrm{GT}}}.
-\end{equation}
-Define $\widehat P(r)=\max_{k:R_k\geq r}P_k$, with value zero when the recall level is unreachable. The reported percentage score is
-\begin{equation}
-\ap(c)=\frac{100}{40}\sum_{j=1}^{40}\widehat P_c(j/40).
-\label{eq:ap}
-\end{equation}
-Overall $\map$ is the unweighted mean of the three class scores. The current inference configurations export predictions above a score cutoff of 0.001 after configured decoding and NMS. AP is computed from these saved predictions; it does not include detections eliminated by the export cutoff or output caps. The 0.001 cutoff is distinct from the operating-point threshold used below.
+\subsection{Efficiency measurement}
+FP32 batch-one profiling on one RTX 5060 Ti includes prepared-frame loading, CPU preprocessing, host-to-device transfer, detector execution, decoding, and postprocessing. Mean, p50, p95, serial FPS, parameters, and peak CUDA memory are measured over 200 selected frames after 20 warmup frames. Sensor acquisition, raw Boreas conversion, weight loading, visualization, and serialization are excluded. Dense accuracy--speed and accuracy--memory Pareto frontiers use these measurements; sparse latency is not inferred from ring count. Measurement equations and memory semantics appear in Appendix~\ref{app:metrics}.
 
-If a class has no ground-truth support in a subset, its AP is undefined. The implementation reports a mean over supported classes, so the corresponding class set must be disclosed. All three target classes have support in the current validation distance bins. Comparisons within a table must use the same supported class set rather than silently changing the averaging denominator.
+\subsection{Training and record keeping}
+All six seed-42 manifests record Adam with a one-cycle schedule, weight decay 0.01, effective batch size four, AMP, two workers, and 80 epochs. Shared augmentation comprises $x/y$ flips, rotation in $[-\pi/4,\pi/4]$, and scaling in $[0.95,1.05]$; ground-truth sampling and beam-drop augmentation are absent. Model-specific learning rates, clipping, NMS, occupancy limits, and loss weights are listed in Appendix~\ref{app:config}.
 
-\subsection{Class-specific operating-point metrics}
-Precision, recall, and F1 are additionally reported at score threshold $s=0.1$:
-\begin{equation}
-P=\frac{\mathrm{TP}}{\mathrm{TP}+\mathrm{FP}},\quad R=\frac{\mathrm{TP}}{N_{\mathrm{GT}}},\quad F_1=\frac{2PR}{P+R}.
-\end{equation}
-The implementation uses zero precision when no prediction is selected and zero F1 when $P+R=0$ with nonzero ground-truth support; recall and F1 are undefined when there is no ground-truth support. Counts accompany these rates. The operating point is fixed before comparison and is not optimized separately for each validation class or detector. These metrics expose missed detections and false-positive behavior that a single AP value cannot fully describe. They are not calibrated estimates of operational risk.
+The fixed epoch-80 checkpoint is reused for every validation condition. Re-evaluation provides paired input comparisons, not independent training realizations. No across-run mean, confidence interval, or rank-stability probability is estimated. Multiphase means, sample standard deviations, and ranges summarize input-offset sensitivity only.
 
-\subsection{Range-stratified accuracy}
-Range is the horizontal distance of a box center from the LiDAR origin,
-\begin{equation}
-\rho(b)=\sqrt{x_b^2+y_b^2}.
-\end{equation}
-The four bins are $[0,20)$, $[20,40)$, $[40,60)$, and $[60,\infty)$ meters. Ground-truth and prediction centers are filtered independently into each bin, followed by the same matching and AP calculation as in Equation~\ref{eq:ap}. Misc boxes remain available for ignore matching without an additional range filter. The last bin is restricted by the rectangular annotation domain; it is not an unlimited sensing-range evaluation.
+Predictions retain frame IDs, boxes, classes, scores, checkpoint/configuration identities, and hashes. The audit checks common ground truth, FP32 inference settings, cutoff, caps, TF32 flags, and sampling manifests. Missing historical source/environment fields are disclosed rather than inferred.
 
-Independent center filtering has a boundary effect: an otherwise matchable overlapping pair can fall into adjacent bins and fail to match in the stratified score. Consequently, RQ3 measures the disclosed center-bin protocol rather than an artifact-free physical distance effect. Class support counts and a proposed boundary sensitivity analysis accompany its interpretation. Results for the unstratified validation set remain the primary overall accuracy score.
-
-\begin{table}[t]
+\begin{table}[!tbp]
 \centering\small
-\caption{Validation target-box support by range. Counts remain unchanged across beam-subset conditions.}
-\label{tab:support}
-\begin{tabular}{lrrr}
-\toprule
-Range (m) & Car & Pedestrian & Cyclist\\
-\midrule
-$[0,20)$ & 5,345 & 9,465 & 931\\
-$[20,40)$ & 7,456 & 9,191 & 825\\
-$[40,60)$ & 4,851 & 6,465 & 641\\
-$[60,\infty)$ & 2,099 & 671 & 311\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{Secondary BEV and legacy evaluator outputs}
-All six configurations predict 3D boxes. BEV evaluation can assess the rotated horizontal footprints of these boxes and is a complementary projection-based metric; using a BEV intermediate representation does not change the prediction task to two-dimensional detection. The benchmark also preserves outputs from OpenPCDet's KITTI-style evaluator as supplementary compatibility information. These outputs are stored separately from local AP40 and must not be substituted into the main tables.
-
-The custom adapter supplies synthetic image-plane boxes and does not reproduce genuine KITTI image-based difficulty strata. Its 2D AP and nominal easy/moderate/hard labels therefore do not establish corresponding camera-detection or difficulty performance. If BEV AP from this adapter is reported, its evaluator and ignore conventions must be named explicitly. A comparison between BEV and 3D accuracy must use disclosed compatible matching conditions. No cross-dataset leaderboard claim is derived from these supplementary outputs.
-
-\subsection{Deterministic beam-subset robustness}
-Let $r_i\in\{0,\ldots,127\}$ denote the integer ring ID of point $i$. For $K\in\{128,64,32,16\}$, set $q_K=128/K$ and retain
-\begin{equation}
-\mathcal{P}_K=\{p_i\in\mathcal{P}_{128}:r_i\bmod q_K=0\}.
-\label{eq:beams}
-\end{equation}
-Thus, the nominal 64-ring condition retains IDs $0,2,\ldots,126$; the 32- and 16-ring conditions retain every fourth and eighth ID. The subsets are nested and deterministic. A nominal ring count does not guarantee that every retained ring has a valid return in every frame.
-
-The primary model is trained on $\mathcal{P}_{128}$ and its weights remain fixed across all four validation conditions. For model $m$ and class $c$, the absolute loss in percentage points and relative retention are
-\begin{align}
-\Delta\ap^{m,c}(K)&=\ap^{m,c}(128)-\ap^{m,c}(K),\\
-\operatorname{Ret}_{m,c}(K)&=100\frac{\ap^{m,c}(K)}{\ap^{m,c}(128)}.
-\end{align}
-Retention is undefined when the dense-input score is zero. The same definitions apply to $\map$. Negative loss values are retained if observed; monotonic degradation is not imposed. Ranking changes and class-specific losses are reported alongside aggregate robustness.
-
-This intervention changes ring availability, not the entire sensor. Ring-ID spacing has not been established as uniform in elevation, and subsampling does not reproduce another sensor's optics, firing pattern, noise, or field of view. It is not a fog or snow simulation. The training interface also permits selecting lower-density prepared data, but matched-density retraining would be a separately labeled experiment rather than evidence for frozen-checkpoint robustness.
-
-\section{Efficiency Measurement and Trade-offs}
-\label{sec:efficiency}
-\subsection{Timing boundary}
-Measurements use a single GPU, evaluation mode, no gradient recording, and batch size one. The primary profiling precision is FP32; optional automatic mixed precision (AMP) is a separate condition. The profiler records the GPU, PyTorch and CUDA versions, seed, and TensorFloat-32 (TF32) flags. The label FP32 refers to tensor precision; actual TF32 settings are retained in the report and must be fixed consistently across compared runs.
-
-We define the following measured components:
-\begin{align}
-T_{\mathrm{E2E}}&=T_{\mathrm{prep}}+T_{\mathrm{H2D}}+T_{\mathrm{forward}},\\
-T_{\mathrm{forward}}&=T_{\mathrm{feature/head/decoding/NMS}}.
-\end{align}
-$T_{\mathrm{prep}}$ includes loading a prepared NumPy frame, CPU preprocessing, and collation. $T_{\mathrm{H2D}}$ includes host-to-device transfer and synchronization. Full-forward timing includes detector execution, head decoding, and configured postprocessing. Because some heads perform NMS internally, the present implementation does not report an architecture-dependent network-only versus NMS-only split.
-
-The end-to-end boundary excludes sensor acquisition, raw Boreas binary conversion, weight loading, visualization, and result serialization. Its precise interpretation is \emph{prepared-frame end-to-end detector latency}. It should not be described as total deployed sensor-to-control latency. All components are measured with a synchronized CPU wall clock; warmup and synchronization follow established CUDA benchmarking considerations \cite{pytorch_benchmark}.
-
-\subsection{Sampling, latency, and memory}
-The profiler selects 200 frame indices evenly across validation index order, or all frames if fewer are available. It executes the first 20 selected frames for warmup and then measures the full selected set, including those frames. Runs are serial without asynchronous input overlap. Selection is deterministic and must remain identical across detectors. File-system caching and operating-system load can affect preprocessing latency and are disclosed as measurement limitations.
-
-Mean, median (p50), and 95th-percentile (p95) latency are reported for each component and the total. The reported serial service rate is
-\begin{equation}
-\operatorname{FPS}_{\mathrm{serial}}=\frac{1000}{\overline T_{\mathrm{E2E}}\ \text{in milliseconds}}.
-\end{equation}
-It is the reciprocal of mean batch-one service time, not a saturated multi-batch throughput measurement. The p95 statistic indicates variation within the selected frame sample; neither it nor mean FPS establishes a hard real-time guarantee.
-
-The profiler resets CUDA peak-memory statistics before each measured frame and reports the maximum allocated and reserved peaks in MiB. Allocated memory includes resident model tensors and frame-specific allocations; reserved memory also reflects the CUDA allocator's caching behavior. Neither quantity is total GPU process memory as measured externally. Total parameter count is reported separately. The active-voxel statistic is the median number of occupied input cells after preprocessing; it is not the sum of active sites across all sparse layers.
-
-A single generic FLOP counter is omitted from the primary comparison because sparse operation counts depend on occupied sites and their distribution. Measured latency and memory are the principal cost metrics. Any later MAC/FLOP result requires a specified counting convention, representative inputs, and coverage of sparse operators. Training GPU-hours are desirable supplementary measurements, but must be derived from recorded training duration and device count rather than inferred from epoch count.
-
-\subsection{Pareto efficiency and constrained selection}
-For accuracy $a_m$ and serial service rate $f_m$, model $u$ dominates model $v$ if $a_u\geq a_v$ and $f_u\geq f_v$, with at least one strict inequality. For allocated memory $g_m$, replace the speed inequality with $g_u\leq g_v$. The resulting nondominated configurations define the accuracy--speed and accuracy--memory frontiers.
-
-A resource-constrained recommendation takes the form
-\begin{equation}
-\underset{m}{\operatorname{argmax}}\ a_m\quad\text{subject to}\quad T^{95}_m\leq L_{\max},\ g_m\leq G_{\max},
-\end{equation}
-where the limits are chosen by the intended application. This provides a transparent selection rule without assuming a universal best detector. Frontiers use the same local AP40, beam condition, inference precision, and measured timing boundary. The current standard metrics script profiles nominal 128-beam input; beam-specific frontiers require additional profiling rather than reusing dense-input latency.
-
-\section{Experimental Procedure}
-\label{sec:experiments}
-\subsection{Training budget and checkpoint policy}
-The generated configurations use Adam with a one-cycle schedule, weight decay 0.01, and 80 epochs. Table~\ref{tab:config} records model-specific settings. The baseline configuration specifies batch size one per GPU; command-line overrides are supported. The principal comparison requires one common effective training batch size and training precision across all included runs. \pending{Confirm the actual effective batch size and AMP/FP32 setting from run metadata, and enter them in Table~\ref{tab:environment}.} A run with a different batch size or precision must be rerun or reported as an explicitly different condition.
-
-The fixed epoch-80 checkpoint is used for the primary comparison. Selecting a separate best-validation checkpoint for each beam condition would introduce an additional selection mechanism and is excluded. An equal epoch budget gives equal nominal passes through the training partition; it does not give equal wall-clock time, GPU-hours, optimizer updates under different batch sizes, or equal convergence. Learning curves should be inspected to identify models that remain undertrained, and this limitation should accompany the final results.
-
-The current seed interface accepts an explicit seed, with 42 as the default when deterministic-seed setup is enabled. A run-directory name alone is insufficient proof of the historical training seed. Sparse CUDA operations may remain nondeterministic even after random generators are seeded. \pending{Verify each historical run from logs or metadata. For the final repeated experiment, use a disclosed common seed list, such as 42, 43, and 44, and distinguish single-run results from seed averages.} Repeated training is a planned statistical extension; this draft does not assert that it has been executed.
-
-\subsection{Configuration provenance and tuning}
-The six fixed configurations form the baseline comparison. Additional tuning is not assumed to have occurred. The final paper must state the number of trials per detector, selection objective, and validation use. If no search is conducted, the comparison should be labeled a fixed-configuration benchmark with zero additional search trials. If tuning is introduced, the search budget must be specified prospectively and applied consistently.
-
-For reproducibility, the release should include the source revision, configuration hashes, data-manifest hashes, checkpoint identities, random-seed metadata, and environment lock information. Configuration changes made after a checkpoint was trained must be distinguished from the configuration that produced that checkpoint. A common final prediction export protocol can be reapplied for evaluation, but must be documented separately from training provenance. Existing predictions exported with a different score cutoff or output cap require regeneration before entering the main comparison.
-
-\begin{table}[t]
-\centering\small
-\caption{Conditions that must be finalized from the actual benchmark runs. Unfilled fields are not assumed to be equal.}
+\caption{Core experimental conditions.}
 \label{tab:environment}
-\begin{tabular}{p{0.44\columnwidth}p{0.43\columnwidth}}
+\begin{adjustbox}{max width=\columnwidth}\begin{tabular}{ll}
 \toprule
-Condition & Value / policy\\
+Condition & Value\\
 \midrule
-Train input & Nominal 128 beams\\
-Epoch / checkpoint & 80 / fixed epoch 80\\
-Effective training batch & \TBD{} (generated default: 1/GPU)\\
-Training precision & \TBD{} (shared across runs)\\
-Training seed list & \TBD{} (explicit metadata)\\
-Inference batch / precision & 1 / FP32; TF32 flags \TBD\\
-Profiling frames / warmup & 200 / 20\\
-GPU / driver & \TBD\\
-CPU / storage / operating system & \TBD\\
-Python / PyTorch / CUDA & \TBD\\
-spconv / cumm versions & \TBD\\
-OpenPCDet revision / hashes & \TBD\\
-Additional tuning trials & \TBD\\
+Training runs / model & 1 (seed 42)\\
+Epoch / checkpoint & 80 / epoch 80\\
+Train batch / precision & 4 / AMP\\
+Evaluation batch / precision & 1 / FP32\\
+Validation frames & 1,326\\
+Profile frames / warmup & 200 / 20\\
+GPU & RTX 5060 Ti\\
+PyTorch / CUDA & 2.11.0+cu128 / 12.8\\
 \bottomrule
-\end{tabular}
+\end{tabular}\end{adjustbox}
 \end{table}
 
-\subsection{Evaluation sequence and record keeping}
-Each checkpoint is evaluated on all 1,326 validation frames at each beam condition. The evaluation loader uses batch size one; the standard command uses two data-loader workers. Predictions are saved with frame identifiers, boxes, classes, and scores. The local evaluator verifies that prediction identifiers match validation metadata exactly and rejects duplicate or missing prediction frames. Class AP40, distance-bin scores, operating-point metrics, and Misc ignore counts are then computed from the same predictions.
-
-Dense-input efficiency profiling uses the same checkpoint and the same selected frame indices across models. It runs independently of training and outside debug synchronization modes. Accuracy inference is kept in the shared FP32 condition for the principal comparison; a precision change requires recomputing both accuracy and profiling results. Result records should carry metric versions and inference configuration hashes so that local AP40, supplementary evaluator outputs, and performance measurements cannot be mixed silently.
-
-\subsection{Planned uncertainty and sensitivity analyses}
-The final analysis should report seed-wise values and, when repeated training is completed, the mean and standard deviation across seeds. To estimate uncertainty associated with the validation sample, we plan a paired cluster bootstrap over the eight validation intervals, using 2,000 resamples and percentile 95\% intervals. Each resample includes whole intervals, preserving within-interval temporal dependence. AP must be recomputed from pooled detections and annotations in each resample; averaging interval AP values is not equivalent. Repeatedly sampled intervals require unique copied frame identifiers to preserve matching semantics. The same resamples are used for both detectors when estimating AP differences or beam-induced losses.
-
-This analysis is planned and not presently part of the standard metrics script. Eight clusters provide limited support for bootstrap inference, and spatial overlap can introduce dependence between clusters. Uncertainty intervals should therefore be interpreted cautiously, with seed variability and interval-level descriptive results shown separately. The paper does not claim population-level significance from thousands of highly correlated frames.
-
-Sensitivity analyses should examine score-export cutoff, prediction cap, and distance-bin boundaries without replacing the prespecified primary result. In particular, a shifted-boundary or boundary-exclusion analysis can reveal how strongly RQ3 depends on localization near 20, 40, and 60 meters. Model-specific NMS thresholds remain potential contributors to ranking differences. \pending{Execute and report these additional analyses, or explicitly identify them as future work in the submitted version.}
-
-\section{Results and Analysis}
+\section{Results}
 \label{sec:results}
-\textbf{Completion note.} All entries in this section are reserved for validated outputs of the common protocol. No current detector results are used in this draft. The following text defines how the completed evidence will answer each research question; statements of a winning configuration or numerical improvement must be added only after measurement.
+The experiment comprises six seed-42 epoch-80 checkpoints, 114 validation evaluations (19 evaluation conditions per model), and six nominal 128-ring profiling runs. All conditions use the same 1,326 frames and target-box fingerprint. The audit verifies actual checkpoint and saved-prediction SHA-256 hashes against the AP, extended-metric, and inference reports, and checks common FP32 precision, evaluation seed, cutoff, caps, and TF32 flags. Angular and modulo-phase reports also match their sampling manifests. Each model contributes one training realization; all 19 evaluation conditions reuse that checkpoint.
 
-\subsection{RQ1: Overall and class-specific accuracy}
-Table~\ref{tab:main} organizes overall and class-wise accuracy alongside computational cost. The unweighted mean gives each target class equal importance, while individual AP values reveal whether a high mean is driven by one class. For this partition, Cyclist has substantially fewer labeled instances than the other target classes (Table~\ref{tab:data}); its differences require particular attention to support and uncertainty.
+\subsection{Dense accuracy and efficiency}
+Table~\ref{tab:main} orders the dense configurations as PV-RCNN (59.11), PointPillars (53.80), Lite (49.66), SECOND (48.50), VoxelNeXt (47.10), and CenterPoint (46.29) in local mAP40. PV-RCNN exceeds PointPillars by 5.31 percentage points and leads Car and Pedestrian AP at 59.73 and 67.79. PointPillars leads Cyclist AP at 50.04, compared with PV-RCNN's 49.81: the 0.23-point difference is descriptive and cannot establish a repeatable advantage from one checkpoint.
 
-The final comparison will state the highest overall local AP40, the class-wise leaders, and paired differences between competitive configurations. A detector with stronger Car AP but weaker Pedestrian or Cyclist AP should be described through that trade-off rather than declared uniformly superior. The PointPillars--Lite comparison is interpreted as a within-architecture capacity comparison. \pending{Insert the measured ordering, class-wise differences, and confidence intervals; identify whether the accuracy differences exceed the observed seed variation.}
+Class performance explains why aggregate rankings are insufficient. SECOND exceeds PointPillars on Car AP (50.69 versus 46.95), whereas PointPillars is stronger on Pedestrian (64.41 versus 56.34) and Cyclist (50.04 versus 38.45). CenterPoint's Cyclist AP (48.92) exceeds that of SECOND, Lite, and VoxelNeXt, despite its lowest aggregate mAP. Its Pedestrian AP of 41.66 limits the aggregate score.
 
-\begin{table*}[t]
+Lite has 1.217 million parameters versus PointPillars' 4.835 million, a 74.82\% reduction. Its mAP is 4.14 points lower, but mean latency decreases from 61.40 to 46.32 ms (24.56\%) and peak allocated memory from 1,543.18 to 876.43 MiB (43.21\%). This is an observed capacity--cost pairing under the common seed-42 protocol, not an estimate of its variability over training runs.
+\begin{table*}[!tbp]
 \centering\scriptsize
-\caption{Primary comparison on nominal 128-beam validation input. AP values are local 3D AP40 percentages at class IoU thresholds 0.7/0.5/0.5. Timing is batch-one prepared-frame end-to-end latency under the shared FP32/TF32 condition. Memory is peak CUDA allocated MiB. No values have been filled.}
+\caption{Seed-42 nominal 128-ring results: local AP40 percentages at Car/Pedestrian/Cyclist IoU 0.7/0.5/0.5; prepared-frame E2E latency at batch one in FP32; peak allocated CUDA memory in MiB. Each configuration has one epoch-80 checkpoint.}
 \label{tab:main}
-\resizebox{\textwidth}{!}{\begin{tabular}{lrrrrrrrrrr}
+\begin{adjustbox}{max width=\textwidth}\begin{tabular}{lrrrrrrrrrr}
 \toprule
 Model & Params (M) & Mean (ms) & p50 (ms) & p95 (ms) & Serial FPS & Memory & Car AP & Ped. AP & Cyc. AP & mAP\\
 \midrule
-PointPillars & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-SECOND & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-CenterPoint & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-VoxelNeXt & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-PV-RCNN & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-PointPillars Lite & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+PointPillars & 4.835 & 61.398 & 59.093 & 73.601 & 16.287 & 1543.18 & 46.95 & 64.41 & 50.04 & 53.80\\
+SECOND & 5.326 & 40.866 & 39.127 & 48.866 & 24.470 & 183.25 & 50.69 & 56.34 & 38.45 & 48.50\\
+CenterPoint & 7.758 & 48.544 & 47.486 & 63.444 & 20.600 & 200.96 & 48.28 & 41.66 & 48.92 & 46.29\\
+VoxelNeXt & 7.454 & 49.177 & 47.260 & 62.556 & 20.335 & 174.79 & 49.08 & 48.47 & 43.75 & 47.10\\
+PV-RCNN & 13.073 & 310.806 & 309.265 & 340.849 & 3.217 & 1524.54 & 59.73 & 67.79 & 49.81 & 59.11\\
+PointPillars Lite & 1.217 & 46.316 & 45.628 & 55.943 & 21.591 & 876.43 & 46.42 & 60.27 & 42.30 & 49.66\\
 \bottomrule
-\end{tabular}}
+\end{tabular}\end{adjustbox}
 \end{table*}
 
-\subsection{RQ2: Computational cost and Pareto frontiers}
-Table~\ref{tab:timing} decomposes latency according to the common timing boundary. This separates CPU and transfer overhead from full-forward execution without assuming that all architectures expose the same internal postprocessing boundary. A lower parameter count need not yield a lower end-to-end latency: preprocessing, sparse occupancy, memory movement, and decoder cost also contribute. This statement describes the interpretation of the metric, not an observed result for a particular detector.
 
-Figure~\ref{fig:pareto} will show the measured nondominated sets. A model can lie on the accuracy--speed frontier while being dominated in accuracy--memory space. Recommendations will therefore identify the resource constraint and the measured hardware. The final discussion will also consider p95 latency; configurations with similar mean service rates may have different upper-tail behavior. \pending{Insert the measured bottlenecks, frontier members, and example selections under explicitly stated latency and memory budgets.}
+SECOND is fastest at 40.87 ms mean and 48.87 ms p95, corresponding to 24.47 serial FPS. Lite adds 1.17 mAP points at a 5.45 ms mean-latency and 693.18 MiB allocated-memory increase. Thus SECOND and Lite represent different choices; SECOND does not dominate Lite on accuracy and speed. The accuracy--speed frontier contains SECOND, Lite, PointPillars, and PV-RCNN. The accuracy--allocated-memory frontier contains VoxelNeXt, SECOND, Lite, and PV-RCNN.
 
-\begin{table*}[t]
-\centering\small
-\caption{Efficiency decomposition at 128-beam input. Component entries are mean/p50/p95 milliseconds. Occupancy counts occupied input cells only. Training GPU-hours require recorded duration and are supplementary pending measurements.}
-\label{tab:timing}
-\resizebox{\textwidth}{!}{\begin{tabular}{lccccrr}
-\toprule
-Model & Input/preprocess & H2D transfer & Full forward & E2E & Input cells (median) & Train GPU-h\\
-\midrule
-PointPillars & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-SECOND & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-CenterPoint & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-VoxelNeXt & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-PV-RCNN & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-PointPillars Lite & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-\bottomrule
-\end{tabular}}
-\end{table*}
+PV-RCNN's 59.11 mAP costs 310.81 ms mean latency: 269.94 ms more, or 7.61 times SECOND's latency, for a 10.62-point aggregate gain. Its 280.68 ms full-forward stage accounts for 90.31\% of measured E2E time. In SECOND, preparation plus transfer consumes 20.53 ms, about 50.23\% of E2E time. Consequently, network acceleration alone cannot remove the preparation cost under this serial boundary. Components include synchronized execution and configured postprocessing, rather than a network-only comparison .
 
-\begin{figure*}[t]
+CenterPoint and VoxelNeXt differ by only 0.63 ms in mean E2E latency (48.54 versus 49.18); one profiling pass provides insufficient evidence for a stable speed advantage of that size. Reported p95 values describe the selected frames, not hard deadlines or uncertainty across profiling repetitions. Under an illustrative p95 limit of 50 ms and a 256 MiB allocated-memory budget, only SECOND is feasible. With limits of 75 ms and 2,048 MiB, PointPillars has the highest measured feasible mAP. These examples use dense-input profiles; sparse latency was not measured and must not be inferred from ring count.
+
+\begin{figure*}[!tbp]
 \centering
-\begin{minipage}{0.47\textwidth}\centering
-\figplaceholder{45mm}{(a) $x$: serial E2E FPS; $y$: local 3D mAP40.\\Plot six configurations, label precision, and connect only nondominated points.}
-\end{minipage}\hfill
-\begin{minipage}{0.47\textwidth}\centering
-\figplaceholder{45mm}{(b) $x$: peak allocated CUDA memory (MiB); $y$: local 3D mAP40.\\Show the accuracy--memory frontier under the same inference condition.}
-\end{minipage}
-\caption{Planned Pareto analysis on 128-beam input. No illustrative performance points are plotted. Accuracy uncertainty can be displayed when repeated or bootstrap measurements are available.}
+\figplaceholder{48mm}{Insert the final two-panel accuracy--speed and accuracy--memory Pareto plot.\\Use vector PDF and consistent model colors.}
+\caption{Dense-input accuracy and resource trade-offs. Connect only nondominated configurations.}
 \label{fig:pareto}
 \end{figure*}
 
-\subsection{RQ3: Distance-dependent accuracy}
-Table~\ref{tab:range} reports range-stratified means, and the accompanying class-resolved analysis will use Table~\ref{tab:support}. The unbounded notation for the final bin refers only to centers inside the annotation crop. Longer-distance scores must not be extrapolated beyond this domain.
+\FloatBarrier
+\subsection{Range and object support}
+PV-RCNN leads aggregate AP in all distance bands, decreasing from 69.82 at 0--20 m to 41.21 at 60 m and beyond (Table~\ref{tab:range}). PointPillars decreases from 64.88 to 35.80, SECOND from 62.46 to 31.10, and Lite from 61.30 to 32.39. The farthest band has only 671 Pedestrian and 311 Cyclist ground-truth boxes; this limited support constrains the strength of small class differences.
 
-A change in range ranking can indicate different sensitivity to sparse observations, localization errors, or class composition. It cannot by itself isolate which mechanism caused the difference. The completed analysis should compare class-specific slopes and paired near-to-far differences and inspect errors around bin boundaries. \pending{Report which configurations preserve the most class-specific accuracy at longer distances, quantify near-to-far losses, and discuss support and boundary sensitivity.}
-
-\begin{table}[t]
+The trend is not uniformly monotonic for every model: CenterPoint's aggregate AP rises from 40.92 at 20--40 m to 43.11 at 40--60 m. Class composition, scene content, and center-bin boundary effects can influence these conditional comparisons. At 60 m and beyond, PV-RCNN leads Car and Pedestrian AP (45.64 and 32.86), while CenterPoint leads Cyclist AP (46.59), ahead of PointPillars (45.76) and PV-RCNN (45.13). These observations do not isolate physical range from scene and class composition.
+\begin{table}[!tbp]
 \centering\small
-\caption{Local 3D mAP40 by radial center distance on 128-beam input. Class-resolved AP and uncertainty should accompany this aggregate table in supplementary material. Distances are in meters.}
+\caption{Dense-input local mAP40 by horizontal center range (m). All bins support all three target classes. Predictions and target centers are filtered independently before matching.}
 \label{tab:range}
-\begin{tabular}{lrrrr}
+\begin{adjustbox}{max width=\columnwidth}\begin{tabular}{lrrrr}
 \toprule
 Model & 0--20 & 20--40 & 40--60 & $\geq60$\\
 \midrule
-PointPillars & \TBD & \TBD & \TBD & \TBD\\
-SECOND & \TBD & \TBD & \TBD & \TBD\\
-CenterPoint & \TBD & \TBD & \TBD & \TBD\\
-VoxelNeXt & \TBD & \TBD & \TBD & \TBD\\
-PV-RCNN & \TBD & \TBD & \TBD & \TBD\\
-PointPillars Lite & \TBD & \TBD & \TBD & \TBD\\
+PointPillars & 64.88 & 49.20 & 47.20 & 35.80\\
+SECOND & 62.46 & 45.00 & 41.52 & 31.10\\
+CenterPoint & 59.02 & 40.92 & 43.11 & 35.26\\
+VoxelNeXt & 61.56 & 44.39 & 38.44 & 29.19\\
+PV-RCNN & 69.82 & 56.22 & 51.70 & 41.21\\
+PointPillars Lite & 61.30 & 45.34 & 43.23 & 32.39\\
 \bottomrule
-\end{tabular}
+\end{tabular}\end{adjustbox}
 \end{table}
 
-\subsection{RQ4: Frozen-checkpoint sparsity robustness}
-Table~\ref{tab:robustness} reports accuracy for the four nested ring conditions. The same dense-trained checkpoint is used across each row. Absolute dense-input accuracy and relative retention answer different questions: a model with a small relative loss can still have a low sparse-input AP, while a high dense-input AP can mask a large degradation.
+\FloatBarrier
+\subsection{Beam sparsity and angular profiles}
+Table~\ref{tab:robustness} shows large losses despite retaining the same checkpoint and labels. At modulo-16, PV-RCNN falls from 59.11 to 18.20 mAP, an absolute loss of 40.91 points but the highest retention (30.79\%). PointPillars retains 29.61\% (15.93 mAP); Lite and SECOND retain 26.99\% and 26.83\%. VoxelNeXt and CenterPoint retain only 15.12\% and 13.51\%, respectively. Absolute loss and relative retention answer different questions: the highest dense score can have the largest absolute decrease while remaining the best sparse aggregate score.
 
-The primary comparison therefore considers sparse-input AP, percentage-point loss, and per-class retention jointly. The full predictions permit an interaction analysis of range and retained rings under the same local metric. The expected information loss motivates the experiment but is not a requirement that every measured score decrease monotonically. \pending{Insert observed losses and ranking changes, identify the most affected classes and ranges, and assess whether the differences persist across seeds or paired interval resamples.}
+For the phase-zero subsets in Table~\ref{tab:robustness}, the aggregate order is unchanged at modulo-64 and modulo-16: PV-RCNN, PointPillars, Lite, SECOND, VoxelNeXt, CenterPoint. At modulo-32, SECOND (30.10) overtakes Lite (29.08). The complete offset analysis below shows that this local swap is phase-specific rather than representative of the mean ordering. PV-RCNN remains first and PointPillars second in every phase-zero modulo condition.
 
-\begin{table*}[t]
+Class-specific degradation also changes the preferred model. At modulo-16, PV-RCNN leads Car and Cyclist AP (17.92 and 14.19), but PointPillars leads Pedestrian AP at 28.22, followed by Lite at 25.34 and PV-RCNN at 22.50. A dense aggregate leader therefore need not be the strongest choice for sparse Pedestrian detection.
+\begin{table*}[!tbp]
 \centering\small
-\caption{Frozen-checkpoint beam-subset evaluation: local 3D mAP40 in percent and losses in percentage points (pp). Every row uses one checkpoint trained on nominal 128-beam input. No fog/snow scores are implied by these columns.}
+\caption{Local mAP40 under deterministic modulo removal. Loss is dense minus modulo-16 in percentage points; retention is modulo-16/dense in percent. One dense-trained seed-42 checkpoint is held fixed per row.}
 \label{tab:robustness}
-\begin{tabular}{lrrrrrrr}
+\begin{adjustbox}{max width=\textwidth}\begin{tabular}{lrrrrrr}
 \toprule
-Model & 128 rings & 64 rings & 32 rings & 16 rings & $\Delta_{64}$ (pp) & $\Delta_{32}$ (pp) & $\Delta_{16}$ (pp)\\
+Model & 128 & 64 & 32 & 16 & Loss (pp) & Ret. (\%)\\
 \midrule
-PointPillars & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-SECOND & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-CenterPoint & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-VoxelNeXt & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-PV-RCNN & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-PointPillars Lite & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+PointPillars & 53.80 & 45.27 & 32.22 & 15.93 & 37.87 & 29.61\\
+SECOND & 48.50 & 42.24 & 30.10 & 13.01 & 35.49 & 26.83\\
+CenterPoint & 46.29 & 38.08 & 23.83 & 6.26 & 40.03 & 13.51\\
+VoxelNeXt & 47.10 & 41.00 & 24.78 & 7.12 & 39.98 & 15.12\\
+PV-RCNN & 59.11 & 54.49 & 38.44 & 18.20 & 40.91 & 30.79\\
+PointPillars Lite & 49.66 & 42.83 & 29.08 & 13.40 & 36.26 & 26.99\\
 \bottomrule
-\end{tabular}
+\end{tabular}\end{adjustbox}
 \end{table*}
-
-\begin{figure}[t]
+\begin{figure*}[!tbp]
 \centering
-\figplaceholder{40mm}{Three class-specific panels.\\$x$: retained nominal rings (128, 64, 32, 16).\\$y$: AP40 or relative retention.\\Use one curve per configuration and disclose uncertainty.}
-\caption{Planned class-specific sparsity response. The horizontal conditions are deterministic ring subsets, not independently acquired sensors.}
-\label{fig:sparsity}
-\end{figure}
-
-\subsection{Error analysis and qualitative evidence}
-Qualitative examples will compare the same frames, camera viewpoint where available for illustration, spatial crop, and displayed score threshold. Selection should follow disclosed categories such as distant objects, crowded scenes, partial occlusion, and dense-versus-sparse disagreement, rather than selecting only successful detections. Ground truth and predictions should be visually distinct, and any camera overlay should be identified as a visualization aid rather than a model input.
-
-\begin{figure*}[t]
-\centering
-\figplaceholder{40mm}{Insert aligned point-cloud views for the same validation frame: ground truth; selected detector predictions at 128 rings; predictions from the same checkpoints at 16 rings.\\Include far pedestrians/cyclists, a false positive, and a missed object. State frame IDs and display thresholds.}
-\caption{Reserved qualitative comparison. Frame selection and visual styling must be shared across detectors and beam conditions.}
-\label{fig:qualitative}
+\includegraphics[width=1.0\textwidth]{paper_modulo_128_64_32_16_3d}
+% \figplaceholder{48mm}{Insert four close oblique point-cloud panels from one fixed validation frame: 128, 64, 32, and 16 modulo rings. Use identical XYZ bounds, camera, point size, color scale, and ground-truth boxes. Keep only a short beam-count title below each panel.}
+\caption{Visual effect of nested phase-zero ring removal on the same Boreas frame. The common oblique view exposes the increasing vertical gaps as the retained ring count decreases. Colored cuboids are the same ground-truth objects in every panel; the figure illustrates the input intervention and is independent of detector predictions.}
+\label{fig:beam-degradation}
 \end{figure*}
 
-\pending{Add measured TP/FP/FN and precision/recall/F1 for every class and configuration, using the template in Appendix~\ref{app:operating}. Select representative failure cases and describe observed geometric errors without attributing unsupported causal mechanisms.}
+Figure~\ref{fig:beam-degradation} provides the geometric context for the numerical losses: labels and viewpoint remain fixed while vertical surface coverage becomes visibly discontinuous. It should appear immediately after Table~\ref{tab:robustness}, so the qualitative change and its AP consequence are read together.
 
-\section{Discussion}
-\subsection{Interpreting detector trade-offs}
-The benchmark is designed to separate four practical criteria that are often collapsed into a single ranking. Overall AP describes class-averaged recognition and localization under one metric. Range-stratified AP describes how performance varies within the shared annotation domain. Frozen-checkpoint ring-subset scores describe sensitivity to a specific sampling intervention. Prepared-frame latency and memory describe resource demand on the measured system. None of these quantities alone determines suitability for an application.
+At score 0.1, sparse recall exposes the missed objects underlying AP loss (The operating-point records). Pedestrian recall decreases from 61.39--76.33\% under dense input to 14.57--32.01\% at modulo-16. PointPillars loses 44.12 percentage points of recall (76.12 to 32.01\%), SECOND loses 51.55 (75.13 to 23.58\%), and PV-RCNN loses 53.57 (76.33 to 22.76\%). For 25,792 Pedestrian targets, PointPillars' FN count increases from 6,158 to 17,537; SECOND's from 6,414 to 19,711; and PV-RCNN's from 6,104 to 19,921. AP degradation thus accompanies a substantial reduction in object recovery, not merely a reshuffling of prediction scores.
 
-A configuration-level result can reflect architecture, capacity, discretization, optimizer settings, decoder behavior, and truncation. The PointPillars--Lite pairing provides a narrower capacity comparison, while comparisons across the other models encompass several simultaneous design differences. Claims about a representation family should therefore be phrased as evidence from the tested configurations. A broader causal study would require controlled ablations or multiple representatives per family.
 
-The final analysis should connect the observed Pareto frontiers to sparse-input and far-range behavior. For example, a configuration selected under a memory budget may have a different robustness profile from the maximum-AP configuration. Such a statement requires measured evidence, not an assumed correlation between model size and robustness. \pending{Synthesize the completed tables into two or three evidence-supported detector-selection recommendations, each with its operating assumptions.}
+Fixed cohorts show where Pedestrian failures concentrate (The fixed-cohort records). Among the 9,132 objects with 21--50 points under dense input, recall falls from 57.02--73.17\% to 0.12--1.83\% at modulo-16. PointPillars recovers 6,573 of these objects under dense input but only 162 under modulo-16; Lite recovers 167 sparse objects, compared with SECOND's 17, PV-RCNN's 13, and CenterPoint/VoxelNeXt's 11 each. In the at-least-101-point cohort, sparse recall remains 37.87--67.45\%. Fixing cohort membership avoids making sparse performance appear stronger by reassigning the hardest objects into a different group. Density still covaries with range and occlusion, so these rates do not identify a causal effect of architecture.
 
-\subsection{What the sparsity experiment establishes}
-Deterministic nested subsets support a paired comparison because frame identity and ground truth remain fixed. They remove one source of variation associated with random point dropping. Their interpretation remains specific to the chosen ring pattern and dense-trained checkpoint. A robust response to this pattern does not establish robustness to missing contiguous elevation bands, nonuniform sensor layouts, or weather-dependent attenuation. Prior density and beam-loss studies motivate these distinctions \cite{griesbacher2025beamdensity,feng2026beamloss}.
+\begin{figure*}[!tbp]
+\centering
+\figplaceholder{48mm}{Insert a two-panel Pedestrian recall plot with cohorts fixed by dense-input point count. Left: 128-ring recall; right: modulo-16 recall. Use the same vertical scale and one line per model; show cohort support below the horizontal axis and omit the empty zero-point cohort.}
+\caption{Pedestrian recall at score 0.1 by fixed dense-input point-count cohort. Keeping cohort membership fixed shows which originally supported objects are lost after ring removal, rather than regrouping them by their reduced sparse-input counts.}
+\label{fig:density-recall}
+\end{figure*}
 
-Matched-density retraining, alternative ring offsets, and sensor-specific sampling patterns would be useful extensions. They must be distinguished from the primary experiment because they change the intervention or the training distribution. Similarly, adding fog or snow requires separate corruption definitions or labeled weather observations; nominal beam reduction is not a substitute for weather evaluation.
 
-\subsection{Reproducibility and practical reporting}
-A reusable benchmark depends on clear measurement boundaries and machine-readable records. Reporting a model's tensor-forward time beside another model's preprocessing-inclusive time would invalidate a speed comparison. The full-forward boundary used here avoids ambiguity from model-specific internal NMS placement. Component latency and occupancy remain useful for diagnosing bottlenecks without presenting a partial operation count as a complete computational cost.
 
-Exact environment information, inference settings, and checkpoint provenance are required to reproduce the final frontier. The recorded seed is also essential: a folder named after a seed does not establish the seed used by an older training script. These details should be resolved before the results are consolidated. The resulting recommendations are intended to be reproducible for the disclosed configurations, rather than universal rankings for every GPU or software release.
+The angular intervention gives a different result from channel-count-matched modulo removal (Table~\ref{tab:elevation-results}). For the VLP-16 profile, PointPillars leads at 11.20 mAP, followed by Lite (10.93), PV-RCNN (10.51), SECOND (7.62), CenterPoint (4.29), and VoxelNeXt (3.75). All six scores are lower than their modulo-16 scores, by 1.96--7.69 percentage points. PointPillars' Pedestrian AP/recall are 16.45/20.18\%, compared with Lite's 15.84/19.15\% and PV-RCNN's 9.37/10.16\%. Thus the measured target-angle approximation does not mitigate the sparse Pedestrian loss in this experiment.
 
-\section{Limitations and Threats to Validity}
-\label{sec:limitations}
-\textbf{Data coverage.} The annotated subset used here does not cover the full multi-season detection problem. The fixed validation intervals may share scene structure with training, and the two-second temporal buffer does not guarantee geographic separation. The official test split is excluded, so all claims concern local validation. Repeated development decisions using this validation set can introduce selection bias; the history of such decisions must be disclosed.
+The VLP-16 dense-FOV control reduces mAP by only 0.34--1.75 points relative to nominal 128 rings. Its median frame retains 173,429.5 points, compared with 22,335 for the 16-ring angular subset. The large remaining difference implicates the sparse selection beyond FOV cropping alone, but does not separate layout from point-count and object-coverage changes.
 
-\textbf{Configuration coverage.} The study includes five established architectures and one channel-reduced baseline, with a finite training budget. It omits other detector designs and cannot assert that a family is universally superior. Model-specific learning rates, grid representations, proposal processing, and NMS thresholds limit architectural causal interpretation. Equal epochs do not establish equal convergence or equal computational expenditure.
+For the VLP-32C profile, PV-RCNN remains first at 41.86 mAP and PointPillars second at 34.23. Relative to modulo-32, AP improves by 1.25--3.42 points in five models, while CenterPoint decreases by 1.65 points. Hence a target angular layout can help or hurt at the same nominal ring count; neither layout is universally superior. The VLP-32C median point count is 44,707.5 versus 177,886.5 for its dense control.
 
-\textbf{Metric conventions.} Local AP40 is not the official Boreas score. Misc ignore handling, independent center-bin filtering, output caps, and the prediction export cutoff affect results. Range scores are sensitive to boundary assignment. Macro-averaging must disclose unsupported classes when subsets become too small. Legacy synthetic image boxes prevent interpretation of genuine KITTI difficulty or camera-detection metrics.
+The VLP-32C FOV retains all 128 source rings, and all 1,326 prepared arrays are byte-identical to the nominal dense input. We therefore use the dense condition as its control and do not present a duplicate VLP-32C FOV panel or table column. SECOND's repeated inference differed by only 0.0155 mAP despite identical input; this residual is treated as repeatability noise rather than a sampling effect.
+\begin{table*}[!tbp]
+\centering\scriptsize
+\caption{Local mAP40 for angular subsets and controls. Mod: modulo; Ang: elevation-matched target profile. FOV125 retains all source rings inside the VLP-16 vertical FOV. The VLP-32C FOV control is omitted because it is byte-identical to the dense 128-ring input. Signed differences are Ang minus Mod at the same nominal ring count.}
+\label{tab:elevation-results}
+\begin{adjustbox}{max width=\textwidth}\begin{tabular}{lrrrrrrr}
+\toprule
+Model & Mod16 & Ang16 & $\Delta_{16}$ & FOV125 & Mod32 & Ang32 & $\Delta_{32}$\\
+\midrule
+PointPillars & 15.93 & 11.20 & -4.73 & 52.22 & 32.22 & 34.23 & +2.02\\
+SECOND & 13.01 & 7.62 & -5.39 & 48.01 & 30.10 & 32.07 & +1.97\\
+CenterPoint & 6.26 & 4.29 & -1.96 & 44.54 & 23.83 & 22.18 & -1.65\\
+VoxelNeXt & 7.12 & 3.75 & -3.37 & 46.06 & 24.78 & 26.24 & +1.46\\
+PV-RCNN & 18.20 & 10.51 & -7.69 & 57.85 & 38.44 & 41.86 & +3.42\\
+PointPillars Lite & 13.40 & 10.93 & -2.48 & 49.33 & 29.08 & 30.33 & +1.25\\
+\bottomrule
+\end{tabular}\end{adjustbox}
+\end{table*}
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=1.0\textwidth]{paper_elevation_3d}
+\caption{Point-cloud comparison of channel-count-matched modulo and elevation-aware sampling. The VLP-16 FOV control separates vertical cropping from 16-ring selection. The nominal 128-ring panel in Figure~\ref{fig:beam-degradation} is the VLP-32C FOV control because that FOV retains every source ring.}
+\label{fig:sampling-comparison}
+\end{figure*}
 
-\textbf{Sampling realism.} Ring-ID subsampling does not recreate a different physical LiDAR, and one retained pattern per severity cannot characterize all possible beam failures. Evaluation preserves labels even for objects with no retained points, making the result a measurement of information removal under fixed targets. The experiment does not establish weather robustness.
+\FloatBarrier
+\subsection{Modulo-phase sensitivity}
+The phase-zero table and point-cloud panels do not establish that the observed loss or ranking is invariant to the starting ring. We therefore evaluated every valid modulo offset while keeping the trained checkpoint fixed: two phases at 64 rings, four at 32, and eight at 16. All 14 sparse conditions per model passed checkpoint, configuration, prediction, ground-truth, and sampling-manifest consistency checks. Table~\ref{tab:multiphase} reports the mean and sample standard deviation across offsets together with the observed minimum and maximum. These are descriptive statistics over paired input interventions, not estimates of training-seed uncertainty or confidence intervals.
 
-\textbf{Hardware and uncertainty.} Latency depends on CPU, storage caching, GPU, software kernels, precision settings, and concurrent workloads. The 200-frame sample provides a finite characterization of latency tails. Reserved CUDA memory is allocator-dependent. A single training seed cannot quantify optimization variability, and eight validation clusters constrain statistical inference. Planned repetitions and sensitivity studies remain necessary before empirical claims are finalized.
+\begin{table*}[!tbp]
+\centering\scriptsize
+\caption{Seed-42 local mAP40 sensitivity across all modulo phases. Each mean, sample standard deviation, minimum, and maximum is computed across 2/4/8 phases at 64/32/16 rings, respectively, for one fixed checkpoint per model.}
+\label{tab:multiphase}
+\begin{adjustbox}{max width=\textwidth}\begin{tabular}{lrrrrrr}
+\toprule
+Model & 64 mean$\pm$sd & 64 min--max & 32 mean$\pm$sd & 32 min--max & 16 mean$\pm$sd & 16 min--max\\
+\midrule
+PointPillars & $44.66\pm0.86$ & 44.05--45.27 & $30.58\pm1.67$ & 28.38--32.22 & $16.83\pm2.15$ & 13.89--20.90\\
+SECOND & $41.23\pm1.43$ & 40.22--42.24 & $28.20\pm1.56$ & 26.33--30.10 & $14.39\pm1.91$ & 12.70--18.28\\
+CenterPoint & $37.35\pm1.04$ & 36.61--38.08 & $21.36\pm2.22$ & 18.59--23.83 & $7.17\pm1.52$ & 6.07--10.53\\
+VoxelNeXt & $39.17\pm2.59$ & 37.34--41.00 & $22.59\pm1.77$ & 20.56--24.78 & $8.06\pm1.44$ & 6.62--10.50\\
+PV-RCNN & $53.26\pm1.74$ & 52.03--54.49 & $36.90\pm1.41$ & 35.12--38.44 & $20.03\pm2.53$ & 17.76--24.96\\
+PointPillars Lite & $42.51\pm0.45$ & 42.19--42.83 & $28.37\pm1.99$ & 25.51--30.12 & $14.68\pm1.79$ & 12.66--18.22\\
+\bottomrule
+\end{tabular}\end{adjustbox}
+\end{table*}
+
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=0.98\textwidth]{paper_multiphase_map40}
+\caption{Sensitivity of local mAP40 to modulo starting phase for one fixed checkpoint per model. Markers show the mean across valid offsets and whiskers show the observed phase minimum and maximum; they are not confidence intervals over training runs.}
+\label{fig:multiphase-summary}
+\end{figure*}
+
+The phase-averaged ordering is PV-RCNN, PointPillars, PointPillars Lite, SECOND, VoxelNeXt, and CenterPoint at every sparse ring count. Consequently, the phase-zero SECOND--Lite reversal at 32 rings does not persist after averaging all four offsets. At 16 rings, mean mAP ranges from 7.17\% for CenterPoint to 20.03\% for PV-RCNN. Within-model min--max spreads are 0.64--3.66 points at 64 rings, 3.31--5.24 points at 32 rings, and 3.88--7.20 points at 16 rings, showing that the choice of starting ring becomes consequential under aggressive subsampling.
+
+The aggregate mAP40 offset pattern is also systematic. Phase 0 gives the highest and phase 1 the lowest mAP40 for all six models at 64 rings. At 32 rings, phase 3 gives the lowest mAP40 for every model; phase 0 gives the highest for five models, while phase 1 is highest for Lite. At 16 rings, phase 4 gives the highest and phase 3 the lowest mAP40 for all six models. Figure~\ref{fig:multiphase-summary} visualizes the resulting mean trajectories and observed phase ranges. These shared aggregate preferences indicate sensitivity to which physical source rings survive, but they do not imply the same phase ordering for every class and do not identify the causal contribution of elevation, object coverage, or scene content.
+
+The eight same-frame 16-ring phase panels are retained as a geometric explanation in Appendix~\ref{app:phase-visual}, rather than occupying another large figure in the main results.
+
+
+Under dense input at score 0.1, PV-RCNN produces 13,467/10,495/6,284 Car TP/FP/FN, 19,688/13,832/6,104 Pedestrian TP/FP/FN, and 1,717/1,341/991 Cyclist TP/FP/FN. Appendix~\ref{app:operating} gives the corresponding precision, recall, and F1. The full machine-readable records retain all model/condition counts. A higher AP does not imply fewer false positives at every score threshold. Native-score ECE, Brier scores, and their methodological caveats are supplementary diagnostics in Appendix~\ref{app:calibration}; the main comparisons prioritize AP, recall, and measured resource costs.
+
+\section{Discussion and Limitations}
+The benchmark exposes a three-way trade-off. PV-RCNN gives the highest dense accuracy at much greater latency; SECOND gives the fastest measured service time and low allocated memory; PointPillars and Lite occupy intermediate accuracy--cost positions. Parameter count alone does not predict latency or memory because preprocessing, representation, occupancy, decoding, and implementation all contribute.
+
+The paired experiments show that dense-trained detectors can lose most of their AP and recall as vertical support is reduced. Nominal channel count is insufficient to predict the outcome: modulo and elevation-matched layouts produce different rankings and class behavior. Dense-FOV controls narrow the explanation but do not isolate layout from point count or object coverage. The complete offset sweep further shows that phase selection can move 16-ring mAP by 3.88--7.20 points within a fixed checkpoint and that a phase-zero rank reversal need not persist in the phase mean. Matched-density retraining would answer a separate adaptation question.
+
+Five limitations bound the claims. First, one seed-42 training realization per configuration cannot estimate optimization variance, confidence intervals, or rank stability. Second, the local sunny-condition split is neither the official hidden test nor an adverse-weather evaluation, and temporal buffering does not ensure geographic independence. Third, local AP40, Misc handling, export cutoff, output caps, and center-based range filtering are study-specific. Fourth, elevation matching omits horizontal resolution, firing timing, motion, noise, return physics, and intensity transfer. Fifth, latency reflects one RTX 5060 Ti, one software stack, 200 frames, and one profiling pass. Missing historical environment fields are disclosed rather than reconstructed.
+
+These limits still permit within-checkpoint paired comparisons. Large losses and broad resource gaps are informative; small differences remain descriptive until independent training and profiling repetitions are available.
 
 \section{Conclusion}
-This paper specifies a systematic LiDAR detector benchmark on Boreas-Objects-V1, covering class-wise 3D accuracy, batch-one computational cost, distance dependence, and frozen-checkpoint sensitivity to deterministic ring subsampling. The protocol compares PointPillars, SECOND, CenterPoint, VoxelNeXt, PV-RCNN, and a reduced-channel PointPillars baseline under a shared data partition and explicitly disclosed configuration differences. A local AP40 definition and a common prepared-frame inference boundary provide the basis for interpretable Pareto comparisons.
+One seed-42 checkpoint per configuration yields a clear measured accuracy--cost trade-off on local Boreas-Objects-V1 validation. PV-RCNN reaches 59.11\% dense mAP40 at 310.81 ms mean latency; SECOND reaches 48.50\% at 40.87 ms, and Lite reaches 49.66\% at 46.32 ms. PointPillars leads dense Cyclist AP and offers 53.80\% aggregate mAP, while Lite reduces its parameter count by 74.82\% at a 4.14-point mAP decrease.
 
-\pending{Complete the conclusion with the principal measured accuracy--efficiency trade-off, the most relevant range or class effect, and the observed sparsity losses, including uncertainty. Do not name a winning detector until results are available.} Future extensions can incorporate independently labeled adverse-weather data, additional sensor sampling patterns, and controlled configuration ablations. Their inclusion would broaden the evidence beyond the present local-validation protocol.
+Modulo-16 phase zero retains only 13.51--30.79\% of dense mAP and sharply reduces Pedestrian recall, especially for fixed 21--50-point cohorts. Across all offsets, the phase-averaged ordering is stable at 64, 32, and 16 rings; Lite remains above SECOND at 32 rings despite the phase-zero reversal. At 16 rings, every model's aggregate mAP40 is highest at phase 4 and lowest at phase 3, with within-model ranges of 3.88--7.20 points. Elevation-matched profiles reveal additional layout sensitivity: PointPillars leads VLP-16 mAP at 11.20\%, and VLP-32C changes AP relative to modulo-32 in a model-dependent direction. AP, recall, class/range performance, latency, and memory should therefore be read together. These are descriptive single-checkpoint findings; independent training repetitions and more controlled sampling ablations are needed to assess repeatability and isolate mechanisms.
 
 \section*{Data and Code Availability}
 Boreas data and its development kit are available through the official project resources \cite{boreas_site,boreas_aws,pyboreas}. The dataset is accessed under its published license; our derived frame lists do not transfer ownership of the source data. OpenPCDet is the underlying detection framework \cite{openpcdet2020}. The benchmark's preparation, configuration generation, evaluation, profiling, and reporting scripts are present in the project. \pending{Insert an accessible benchmark repository or archived release URL, revision, license information, and links to the exact split/configuration manifests before submission. Public release is not claimed by this draft.}
@@ -487,15 +400,26 @@ Boreas data and its development kit are available through the official project r
 \pending{Insert actual funding and acknowledgments, author contributions, and any venue-required competing-interest or AI-assistance declarations. Do not infer the authors' institutions or funding.}
 
 \appendix
+\section{Metric and Measurement Details}
+\label{app:metrics}
+For oriented boxes $b$ and $g$, $\operatorname{IoU}_{3D}=V(b\cap g)/(V(b)+V(g)-V(b\cap g))$. Predictions use deterministic score tie breakers and one-to-one same-class matching. At recall samples $j/40$,
+\begin{equation}
+\mathrm{AP}_{40}(c)=\frac{100}{40}\sum_{j=1}^{40}\max_{k:R_k\ge j/40}P_k.
+\end{equation}
+Saved predictions use cutoff 0.001; operating-point metrics use 0.1. Misc boxes can suppress unmatched predictions but are never positives. Range AP filters prediction and target centers independently, which can create boundary mismatches.
+
+Point support counts retained points inside each oriented ground-truth box before model-specific voxelization. Full-domain matches define cohort recall. Density remains observational because range, size, and occlusion also affect point count. Objects and labels remain in sparse evaluation even when no returns survive.
+
+Prepared-frame latency is $T_{\mathrm{E2E}}=T_{\mathrm{prep}}+T_{\mathrm{H2D}}+T_{\mathrm{forward}}$, where forward includes decoding and configured postprocessing. CUDA synchronization surrounds measurement, and serial FPS is $1000/\overline{T}_{\mathrm{E2E}}$ in milliseconds. Peak allocated/reserved memory includes model tensors and allocator behavior but is not total external process memory. Legacy KITTI-style and BEV outputs remain supplementary because the adapter does not reproduce genuine KITTI image difficulty strata.
 \section{Configuration Details}
 \label{app:config}
-Table~\ref{tab:config} records the current generated settings. All use the shared three-class dataset and augmentation described in Section~\ref{sec:benchmark}. The one-cycle schedule uses \texttt{PCT\_START}=0.4, \texttt{DIV\_FACTOR}=10, and momentum parameters $(0.95,0.85)$. A configuration hash and training-run manifest remain necessary to prove the settings of any historical checkpoint.
+Table~\ref{tab:config} records the settings of the seed-42 runs. All use the shared three-class dataset and augmentation described in Section~\ref{sec:benchmark}. The one-cycle schedule uses \texttt{PCT\_START}=0.4, \texttt{DIV\_FACTOR}=10, and momentum parameters $(0.95,0.85)$. All six seed-42 run manifests archive their effective configuration. Table values describe those configurations; missing historical source/environment metadata are disclosed in the discussion of limitations.
 
-\begin{table*}[t]
+\begin{table*}[!tbp]
 \centering\small
-\caption{Current configuration snapshot. Occupancy caps apply to both training and evaluation; max points is per input cell. NMS threshold is the configured final detector threshold, not the accuracy-matching IoU threshold.}
+\caption{Seed-42 configuration snapshot. Occupancy caps apply to both training and evaluation; max points is per input cell. NMS threshold is the configured final detector threshold, not the accuracy-matching IoU threshold.}
 \label{tab:config}
-\resizebox{\textwidth}{!}{\begin{tabular}{lrrrrr}
+\begin{adjustbox}{max width=\textwidth}\begin{tabular}{lrrrrr}
 \toprule
 Model & Learning rate & Gradient norm clip & Max points/cell & Max input cells & NMS threshold\\
 \midrule
@@ -506,41 +430,128 @@ VoxelNeXt & 0.001 & 10 & 10 & 200,000 & 0.20\\
 PV-RCNN & 0.010 & 10 & 10 & 200,000 & 0.10\\
 PointPillars Lite & 0.003 & 10 & 32 & 80,000 & 0.01\\
 \bottomrule
-\end{tabular}}
+\end{tabular}\end{adjustbox}
 \end{table*}
 
-\section{Operating-point Table Template}
-\label{app:operating}
-Table~\ref{tab:operating} illustrates the required per-class reporting for one configuration and beam condition. Duplicate this template for every included condition in supplementary material. The main body should discuss the most informative differences without conflating score-threshold F1 with AP integrated over recall.
+\FloatBarrier
+\subsection{Training loss functions and weights}
+\label{app:loss}
+Table~\ref{tab:loss-config} records the loss weights from the archived effective configurations of the six seed-42 runs. Component definitions follow the corresponding OpenPCDet head implementations. The benchmark retains these model-specific objectives rather than imposing a common numerical loss scale across architectures.
 
-\begin{table}[t]
+\paragraph{Anchor-based dense heads.}
+PointPillars, SECOND, PointPillars Lite, and the PV-RCNN proposal head use sigmoid focal classification loss with $\alpha=0.25$ and $\gamma=2$, Smooth L1 regression on seven encoded box residuals with transition parameter $\beta=1/9$, and cross-entropy classification of two direction bins. Their dense-head objective is
+\begin{equation}
+\mathcal{L}_{\mathrm{anchor}}
+=\mathcal{L}_{\mathrm{cls}}+2\mathcal{L}_{\mathrm{box}}
++0.2\mathcal{L}_{\mathrm{dir}}.
+\end{equation}
+All seven regression code weights are one. The yaw residual uses the implementation's sine-difference transform. Classification includes valid positive and negative anchors, whereas regression and direction loss use positive anchors. Anchor losses are normalized by the positive-anchor count in each frame, clamped to at least one, and then averaged over the batch.
+
+\paragraph{Center-based dense heads.}
+CenterPoint and VoxelNeXt use a modified focal loss on Gaussian center heatmaps, with prediction-focusing exponent 2 and negative-target weight $(1-y)^4$, together with masked L1 box regression. CenterPoint evaluates a dense heatmap; VoxelNeXt evaluates its sparse counterpart. Their objectives are
+\begin{align}
+\mathcal{L}_{\mathrm{CP}}&=\mathcal{L}_{\mathrm{hm}}+\mathcal{L}_{\mathrm{box}},\\
+\mathcal{L}_{\mathrm{VN}}&=\mathcal{L}_{\mathrm{hm}}+0.25\mathcal{L}_{\mathrm{box}}.
+\end{align}
+All eight regression code weights are one, covering horizontal center offsets, height, three dimensions, and sine/cosine yaw. Heatmap loss is normalized by the number of exact positive centers when nonzero; with no positive centers it retains the summed negative term. Regression ignores invalid targets and is normalized by the valid target count, clamped to at least one. Neither configuration enables an additional IoU prediction or IoU regression loss.
+
+\paragraph{PV-RCNN point and refinement heads.}
+PV-RCNN adds point classification and ROI refinement to its anchor-based proposal objective:
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_{\mathrm{PV}}={}&\mathcal{L}_{\mathrm{anchor}}
++\mathcal{L}_{\mathrm{point\text{-}cls}}\\
+&+\mathcal{L}_{\mathrm{ROI\text{-}cls}}
++\mathcal{L}_{\mathrm{ROI\text{-}box}}
++\mathcal{L}_{\mathrm{corner}}.
+\end{aligned}
+\end{equation}
+The configured \texttt{PointHeadSimple} uses sigmoid focal classification with $\alpha=0.25$, $\gamma=2$, and unit weight, normalized by the positive-point count clamped to at least one. It has no active point-regression term. ROI classification uses binary cross-entropy on logits and averages over nonignored sampled ROIs. ROI regression uses Smooth L1 ($\beta=1/9$) on seven residuals with unit code weights and normalizes over foreground ROIs. Corner regularization is enabled: Smooth L1 with $\beta=1$ is applied to corner distances using the smaller distance to the target orientation or its $\pi$-rotated equivalent, then averaged over corners and foreground ROIs. ROI classification, box regression, and corner regularization each have weight one.
+
+\begin{table*}[!tbp]
 \centering\small
-\caption{Per-class operating point at score 0.1. Configuration/beam condition: \TBD. Counts use the local same-class IoU and Misc ignore rules. Rates may be shown as percentages with units stated.}
+\caption{Loss configuration of the seed-42 runs. Weights multiply the component losses after their implementation-specific normalization. Dashes indicate absent terms; the point-row classification weight is \texttt{point\_cls\_weight}. Direction loss is two-bin cross-entropy; corner regularization applies only to PV-RCNN refinement. These are objective settings, not measured final training losses.}
+\label{tab:loss-config}
+\begin{adjustbox}{max width=\textwidth}\begin{tabular}{lllrrrr}
+\toprule
+Model / head & Classification loss & Box loss & $w_{\mathrm{cls}}$ & $w_{\mathrm{box}}$ & $w_{\mathrm{dir}}$ & $w_{\mathrm{corner}}$\\
+\midrule
+PointPillars (dense) & Sigmoid focal & Smooth L1 & 1 & 2 & 0.2 & --\\
+SECOND (dense) & Sigmoid focal & Smooth L1 & 1 & 2 & 0.2 & --\\
+CenterPoint (dense) & Heatmap focal & Masked L1 & 1 & 1 & -- & --\\
+VoxelNeXt (dense) & Heatmap focal & Masked L1 & 1 & 0.25 & -- & --\\
+PV-RCNN (dense) & Sigmoid focal & Smooth L1 & 1 & 2 & 0.2 & --\\
+PV-RCNN (point) & Sigmoid focal & -- & 1 & -- & -- & --\\
+PV-RCNN (ROI) & Binary cross-entropy & Smooth L1 & 1 & 1 & -- & 1\\
+PointPillars Lite (dense) & Sigmoid focal & Smooth L1 & 1 & 2 & 0.2 & --\\
+\bottomrule
+\end{tabular}\end{adjustbox}
+\end{table*}
+
+The component sets, target counts, and normalization differ across heads. Consequently, raw total training loss is not used to rank detectors or as a common convergence threshold. Checkpoint selection remains the fixed epoch-80 policy in Section~\ref{sec:benchmark}; the loss specification does not establish convergence or quantify across-training-run variability.
+
+\section{Operating-point Results}
+\label{app:operating}
+Table~\ref{tab:operating} reports the dense-input PV-RCNN operating point. Complete per-class TP/FP/FN, precision, recall, and F1 for every model and ring condition accompany the machine-readable supplementary results.
+
+\begin{table}[!tbp]
+\centering\small
+\caption{PV-RCNN at 128 rings and score 0.1. Rates are fractions; counts use local same-class 3D IoU and Misc ignore rules.}
 \label{tab:operating}
-\begin{tabular}{lrrrrrr}
+\begin{adjustbox}{max width=\columnwidth}\begin{tabular}{lrrrrrr}
 \toprule
 Class & TP & FP & FN & Prec. & Recall & F1\\
 \midrule
-Car & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-Pedestrian & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
-Cyclist & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
+Car & 13467 & 10495 & 6284 & 0.5620 & 0.6818 & 0.6162\\
+Pedestrian & 19688 & 13832 & 6104 & 0.5874 & 0.7633 & 0.6639\\
+Cyclist & 1717 & 1341 & 991 & 0.5615 & 0.6340 & 0.5956\\
 \bottomrule
-\end{tabular}
+\end{tabular}\end{adjustbox}
 \end{table}
 
-\section{Artifact and Completion Checklist}
+\section{Modulo-Phase Point-Cloud Visualization}
+\label{app:phase-visual}
+\begin{figure*}[!tbp]
+\centering
+\includegraphics[width=1.0\textwidth]{paper_phase16_3d}
+
+% \figplaceholder{68mm}{Insert a $2\times4$ grid showing all eight 16-ring phases $p=0,\ldots,7$ on the same validation frame. Use one close oblique view, identical crop and colors, ground-truth boxes without class text, and only the phase title below each panel.}
+\caption{Geometric variation among the eight valid 16-ring modulo offsets. All panels use the same source frame and differ only in retained ring phase; this is input-offset variation, not training-seed variation.}
+\label{fig:multiphase}
+\end{figure*}
+
+\section{Supplementary Confidence Diagnostics}
+\label{app:calibration}
+ECE and Brier remain secondary diagnostics rather than main contributions. For nonignored exported detection $i$ with confidence $s_i$ and TP label $y_i$, 15 equal-width bins give $\mathrm{ECE}=\sum_j |B_j|/N_D\,|\bar{s}_j-\bar{y}_j|$ and $\mathrm{Brier}=N_D^{-1}\sum_i(s_i-y_i)^2$. Missed targets have no score and are absent, so lower ECE under sparsity cannot imply better recovery.
+\begin{table*}[!tbp]
+\centering\small
+\caption{Pedestrian native-score diagnostics (fractions). ECE/Brier use nonignored exported detections at cutoff 0.001; recall uses all target objects at score 0.1. Each row uses one seed-42 checkpoint.}
+\label{tab:calibration-results}
+\begin{adjustbox}{max width=\textwidth}\begin{tabular}{lrrrrrr}
+\toprule
+Model & ECE 128 & ECE 16 & Brier 128 & Brier 16 & Recall 128 & Recall 16\\
+\midrule
+PointPillars & 0.0653 & 0.0730 & 0.0460 & 0.0995 & 0.7612 & 0.3201\\
+SECOND & 0.0698 & 0.0252 & 0.0420 & 0.0334 & 0.7513 & 0.2358\\
+CenterPoint & 0.0542 & 0.0151 & 0.0514 & 0.0390 & 0.6139 & 0.1642\\
+VoxelNeXt & 0.0488 & 0.0078 & 0.0471 & 0.0232 & 0.6632 & 0.1457\\
+PV-RCNN & 0.0371 & 0.1429 & 0.0988 & 0.1569 & 0.7633 & 0.2276\\
+PointPillars Lite & 0.0649 & 0.0549 & 0.0411 & 0.0868 & 0.7476 & 0.3058\\
+\bottomrule
+\end{tabular}\end{adjustbox}
+\end{table*}
+
+
+\section{Completion Checklist}
 \label{app:checklist}
-\textbf{Editorial appendix; remove before submission.} The working manuscript is standalone and its figures are deliberate placeholders. The following items must be completed without altering the disclosed distinction between implemented and planned procedures:
+\textbf{Editorial appendix; remove before submission.} Completed empirical tables and plots are derived from the six checkpoints and their validated reports. Remaining work is as follows:
 \begin{enumerate}
-\item Replace author, affiliation, funding, declaration, and release-link placeholders with verified information.
-\item Archive the ordered official interval list, frame IDs, data-manifest hashes, source revision, and configuration hashes.
-\item Confirm common training batch and precision; audit actual historical seeds; separate any incompatible runs.
-\item Regenerate predictions under the shared score cutoff 0.001 and current candidate/output caps. Use local AP40 consistently in accuracy, range, sparsity, and Pareto tables.
-\item Fill Tables~\ref{tab:main}--\ref{tab:robustness} from validated records and provide per-class operating metrics, range AP, and retention in supplementary material.
-\item Record complete hardware/software conditions and TF32 settings. Collect training duration if GPU-hours are reported.
-\item Execute repeated-seed, bootstrap, and sensitivity procedures if they are to be described as completed analyses; otherwise revise their wording and limit statistical conclusions.
-\item Replace figure boxes with actual vector plots or documented qualitative examples. Fill the abstract, results interpretations, discussion recommendations, and conclusion from measured evidence.
-\item Maintain the scope: local validation, sunny-condition detection annotations, and deterministic ring-subset robustness. Add separate methods and evidence before making weather or official-test claims.
+\item Complete author, affiliation, funding, declarations, dataset/version provenance, and an accessible code/data-manifest release link.
+\item Preserve all six verified seed-42 training manifests and checkpoint identities. Recover missing training-time source/environment records and the PV-RCNN training split hash where evidence exists; do not substitute a current artifact for an absent historical record.
+\item Archive the complete seed-42 modulo-phase summaries, per-condition reports, and sampling manifests used for Table~\ref{tab:multiphase} and Figure~\ref{fig:multiphase-summary}.
+\item Retain the single-seed, one-training-run-per-model design. Do not report across-training-run means, standard deviations, bootstrap intervals, or repetition-frequency claims; label any modulo-phase dispersion explicitly as variation across paired input offsets.
+\item Package the supplementary AP, range support, operating counts, density cohorts, native-score bin counts, angular sampling manifests, and audit hashes with the final manuscript.
+\item Optional qualitative examples require disclosed frame selection; none are claimed here. Keep the local-validation, sunny-annotation and source-data sampling scope.
 \end{enumerate}
 
 \clearpage
@@ -597,5 +608,12 @@ Cyclist & \TBD & \TBD & \TBD & \TBD & \TBD & \TBD\\
 \bibitem{boreas_site} ``The Boreas Dataset.'' \url{https://www.boreas.utias.utoronto.ca/}. Accessed 2026-10-07.
 
 \bibitem{boreas_aws} ``Boreas Autonomous Driving Dataset --- AWS registry.'' \url{https://registry.opendata.aws/boreas/}. Accessed 2026-10-07.
+
+\bibitem{kuppers2020calibration} Fabian K\"uppers, Jan Kronenberger, Amirhossein Shantia, and Anselm Haselhoff. ``Multivariate Confidence Calibration for Object Detection.'' \textit{IEEE/CVF Conference on Computer Vision and Pattern Recognition Workshops}, 2020. DOI: \href{https://doi.org/10.1109/CVPRW50498.2020.00171}{10.1109/CVPRW50498.2020.00171}. \url{https://arxiv.org/abs/2004.13546}.
+
+\bibitem{kuzucu2024calibration} Selim Kuzucu, Kemal Oksuz, Jonathan Sadeghi, and Puneet K. Dokania. ``On Calibration of Object Detectors: Pitfalls, Evaluation and Baselines.'' \textit{arXiv:2405.20459}, 2024. \url{https://arxiv.org/abs/2405.20459}.
+
+\bibitem{velodyne_profiles} ROS Velodyne drivers contributors. Nominal VLP-16 and VLP-32C calibration profiles, \texttt{VLP16db.yaml} and \texttt{VeloView-VLP-32C.yaml}. Pinned revision \texttt{56fc178d2dad4b6d38c6a69aeb2435ff75503e52}. \url{https://github.com/ros-drivers/velodyne/tree/56fc178d2dad4b6d38c6a69aeb2435ff75503e52/velodyne_pointcloud/params}.
+
 \end{thebibliography}
 \end{document}

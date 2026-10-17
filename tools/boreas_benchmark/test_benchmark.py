@@ -11,7 +11,8 @@ import numpy as np
 import yaml
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from evaluate import ap_for_class, evaluate, iou3d, in_range
+from evaluate import ap40_from_ranked, ap_for_class, evaluate, iou3d, in_range
+from prepare import beam_subset
 from make_configs import make_one, MODEL_SOURCES
 from report import write_reports
 
@@ -35,6 +36,41 @@ class MetricTests(unittest.TestCase):
         self.assertAlmostEqual(iou3d(BOX, rotated), 1/3, places=6)
         far = BOX.copy(); far[2] += 3
         self.assertEqual(iou3d(BOX, far), 0)
+
+    @staticmethod
+    def _corners_reference(box):
+        c, s = np.cos(box[6]), np.sin(box[6])
+        return [(box[0] + c*sx - s*sy, box[1] + s*sx + c*sy)
+                for sx, sy in ((box[3]/2, box[4]/2), (-box[3]/2, box[4]/2),
+                               (-box[3]/2, -box[4]/2), (box[3]/2, -box[4]/2))]
+
+    def test_geometry_against_independent_shapely_reference(self):
+        try:
+            from shapely.geometry import Polygon
+        except ImportError:
+            self.skipTest("Shapely is optional; analytical IoU tests still run")
+        cases = []
+        for x, y, z, yaw in ((10, 0, 0, .37), (10.7, -.4, .25, -1.1),
+                             (8.5, 1.2, -.2, 2.4)):
+            box = BOX.astype(float).copy()
+            box[:3], box[6] = (x, y, z), yaw
+            cases.append(box)
+        for first in cases:
+            for second in cases:
+                area = Polygon(self._corners_reference(first)).intersection(
+                    Polygon(self._corners_reference(second))).area
+                z_overlap = max(0., min(first[2]+first[5]/2, second[2]+second[5]/2) -
+                                max(first[2]-first[5]/2, second[2]-second[5]/2))
+                overlap = area*z_overlap
+                union = np.prod(first[3:6])+np.prod(second[3:6])-overlap
+                self.assertAlmostEqual(iou3d(first, second), overlap/union if overlap else 0., places=9)
+
+    def test_precision_envelope_and_recall_sampling(self):
+        self.assertEqual(ap40_from_ranked([], [], 1), 0)
+        self.assertIsNone(ap40_from_ranked([], [], 0))
+        self.assertAlmostEqual(ap40_from_ranked([1, 0, 1], [0, 1, 0], 2), 83.3333, places=4)
+        with self.assertRaises(ValueError):
+            ap40_from_ranked([1], [1], 1)
 
     def test_perfect_missing_and_high_score_fp(self):
         self.assertEqual(self.score(record(["Car"], [BOX], [.9]))["AP40"], 100)
@@ -84,6 +120,21 @@ class MetricTests(unittest.TestCase):
             (folder / "result.pkl").write_bytes(pickle.dumps([]))
             with self.assertRaises(ValueError):
                 evaluate(folder / "result.pkl", folder / "custom_infos_val.pkl")
+
+    def test_modulo_phase_subsets_are_complete_and_distinct(self):
+        points = np.zeros((128, 6), dtype=np.float32)
+        points[:, 4] = np.arange(128)
+        for beams in (64, 32, 16):
+            modulus = 128 // beams
+            retained = []
+            for phase in range(modulus):
+                subset = beam_subset(points, beams, phase)
+                self.assertEqual(len(subset), beams)
+                self.assertTrue(np.all(subset[:, 4].astype(int) % modulus == phase))
+                retained.extend(subset[:, 4].astype(int).tolist())
+            self.assertEqual(sorted(retained), list(range(128)))
+        with self.assertRaises(ValueError):
+            beam_subset(points, 64, 2)
 
 class ConfigTests(unittest.TestCase):
     def test_generated_and_saved_configs_have_common_inference_budget(self):

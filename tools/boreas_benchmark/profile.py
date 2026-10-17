@@ -38,13 +38,20 @@ def describe(values: list[float]) -> dict:
             "p95_ms": round(float(np.percentile(array, 95)), 3)}
 
 
+def describe_counts(values: list[int]) -> dict:
+    array = np.asarray(values)
+    return {"mean": round(float(array.mean()), 2),
+            "p50": int(np.percentile(array, 50)),
+            "p95": int(np.percentile(array, 95))}
+
+
 def profile(args: argparse.Namespace) -> dict:
     if not torch.cuda.is_available():
         raise RuntimeError("A CUDA GPU is required for latency profiling")
     if os.environ.get('CUDA_LAUNCH_BLOCKING') == '1':
         raise RuntimeError('Unset CUDA_LAUNCH_BLOCKING before latency profiling')
-    if args.frames <= 0 or args.warmup < 0:
-        raise ValueError('--frames must be positive and --warmup nonnegative')
+    if args.frames <= 0 or args.warmup < 0 or args.repeats <= 0:
+        raise ValueError('--frames/repeats must be positive and --warmup nonnegative')
     common_utils.set_random_seed(args.seed)
     cfg_from_yaml_file(str(args.cfg), cfg)
     if args.boreas_beams is not None:
@@ -68,6 +75,7 @@ def profile(args: argparse.Namespace) -> dict:
         torch.cuda.synchronize()
         start = time.perf_counter()
         sample = dataset[index]
+        point_count = int(len(sample.get("points", [])))
         batch = dataset.collate_batch([sample])
         preprocess_end = time.perf_counter()
         voxel_count = int(len(batch.get("voxel_coords", [])))
@@ -81,24 +89,27 @@ def profile(args: argparse.Namespace) -> dict:
         return ((preprocess_end - start) * 1000,
                 (forward_start - preprocess_end) * 1000,
                 (end - forward_start) * 1000,
-                voxel_count)
+                point_count, voxel_count)
 
     for index in warmup:
         run_one(index)
-    pre, transfer, forward, end_to_end, voxels, peaks, reserves = [], [], [], [], [], [], []
-    for index in indices:
-        torch.cuda.reset_peak_memory_stats()
-        p, t, f, count = run_one(index)
-        pre.append(p)
-        transfer.append(t)
-        forward.append(f)
-        end_to_end.append(p + t + f)
-        voxels.append(count)
-        peaks.append(torch.cuda.max_memory_allocated() / 2**20)
-        reserves.append(torch.cuda.max_memory_reserved() / 2**20)
+    pre, transfer, forward, end_to_end = [], [], [], []
+    points, voxels, peaks, reserves, repeat_reports = [], [], [], [], []
+    for repeat in range(args.repeats):
+        repeat_e2e = []
+        for index in indices:
+            torch.cuda.reset_peak_memory_stats()
+            p, t, f, point_count, voxel_count = run_one(index)
+            pre.append(p); transfer.append(t); forward.append(f)
+            end_to_end.append(p + t + f); repeat_e2e.append(p + t + f)
+            points.append(point_count); voxels.append(voxel_count)
+            peaks.append(torch.cuda.max_memory_allocated() / 2**20)
+            reserves.append(torch.cuda.max_memory_reserved() / 2**20)
+        repeat_reports.append({"repeat": repeat + 1, **describe(repeat_e2e)})
     result = {
-        "model": args.cfg.stem, "checkpoint": str(args.ckpt),
-        "frames": len(indices), "batch_size": 1,
+        "model": args.cfg.stem, "checkpoint": str(args.ckpt.resolve()),
+        "frames": len(indices), "repeats": args.repeats,
+        "measured_samples": len(end_to_end), "batch_size": 1,
         "precision": "AMP" if args.amp else "FP32",
         "seed": args.seed, "data_path": str(dataset.root_path),
         "tf32_matmul": torch.backends.cuda.matmul.allow_tf32,
@@ -112,10 +123,13 @@ def profile(args: argparse.Namespace) -> dict:
         "model_forward_including_postprocess": describe(forward),
         "timing_note": "Synchronized CPU wall clock; full forward includes all head decoding and NMS. No architecture-dependent network/NMS split.",
         "end_to_end": describe(end_to_end),
+        "repeat_end_to_end": repeat_reports,
         "fps_from_mean_end_to_end": round(1000 / float(np.mean(end_to_end)), 3),
         "peak_cuda_allocated_mib": round(max(peaks), 2),
         "peak_cuda_reserved_mib": round(max(reserves), 2),
+        "input_points": describe_counts(points),
         "active_voxels_median": int(np.median(voxels)),
+        "active_voxels": describe_counts(voxels),
     }
     return result
 
@@ -126,6 +140,8 @@ def main() -> None:
     parser.add_argument("--ckpt", required=True, type=Path)
     parser.add_argument("--frames", type=int, default=200)
     parser.add_argument("--warmup", type=int, default=20)
+    parser.add_argument("--repeats", type=int, default=1,
+                        help="Repeat the same deterministic frame sample")
     parser.add_argument("--amp", action="store_true", help="Optional AMP inference; default is FP32")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--boreas_beams", type=int, choices=[128, 64, 32, 16])

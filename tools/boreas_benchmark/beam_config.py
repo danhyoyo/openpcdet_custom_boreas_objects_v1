@@ -4,8 +4,12 @@ from pathlib import Path
 
 
 def select_beams(cfg, beams):
-    if cfg.DATA_CONFIG.DATASET != "CustomDataset":
-        raise ValueError("--boreas_beams requires the Boreas CustomDataset config")
+    supported_datasets = {"CustomDataset", "BoreasPhaseMixDataset"}
+    if cfg.DATA_CONFIG.DATASET not in supported_datasets:
+        raise ValueError(
+            "--boreas_beams requires a Boreas CustomDataset or "
+            "BoreasPhaseMixDataset config"
+        )
     current = Path(cfg.DATA_CONFIG.DATA_PATH)
     root = current.parent if current.name in ("128", "64", "32", "16") else current
     target = root / str(beams)

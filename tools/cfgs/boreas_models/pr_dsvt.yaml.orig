@@ -1,0 +1,51 @@
+_BASE_CONFIG_: cfgs/boreas_models/dsvt.yaml
+
+DATA_CONFIG:
+  _BASE_CONFIG_: cfgs/boreas_models/dataset.yaml
+  DATASET: BoreasPhaseMixDataset
+  PHASE_MIX:
+    ENABLED: true
+    # Beam-count mass: dense=.40, 64=.20, 32=.20, 16=.20.
+    # Each phase within a beam count receives equal probability.
+    CONDITIONS:
+      - {NAME: '128', WEIGHT: 0.400}
+      - {NAME: '64', WEIGHT: 0.100}
+      - {NAME: '64_phase1', WEIGHT: 0.100}
+      - {NAME: '32', WEIGHT: 0.050}
+      - {NAME: '32_phase1', WEIGHT: 0.050}
+      - {NAME: '32_phase2', WEIGHT: 0.050}
+      - {NAME: '32_phase3', WEIGHT: 0.050}
+      - {NAME: '16', WEIGHT: 0.025}
+      - {NAME: '16_phase1', WEIGHT: 0.025}
+      - {NAME: '16_phase2', WEIGHT: 0.025}
+      - {NAME: '16_phase3', WEIGHT: 0.025}
+      - {NAME: '16_phase4', WEIGHT: 0.025}
+      - {NAME: '16_phase5', WEIGHT: 0.025}
+      - {NAME: '16_phase6', WEIGHT: 0.025}
+      - {NAME: '16_phase7', WEIGHT: 0.025}
+  DATA_PROCESSOR:
+    - NAME: mask_points_and_boxes_outside_range
+      REMOVE_OUTSIDE_BOXES: true
+    - NAME: shuffle_points
+      SHUFFLE_ENABLED:
+        train: true
+        test: false
+    - NAME: transform_points_to_voxels_placeholder
+      VOXEL_SIZE: [0.32, 0.32, 0.25]
+
+MODEL:
+  VFE:
+    NAME: TorchDynamicVoxelVFE
+    USE_NORM: true
+    WITH_DISTANCE: true
+    USE_ABSLOTE_XYZ: true
+    USE_ANGULAR_FEATURES: true
+    COUNT_NORMALIZER: 128
+    NUM_FILTERS: [128, 128]
+  BACKBONE_3D:
+    NAME: PhaseRobustDSVT
+    PROFILE_CONDITIONING:
+      NUM_BINS: 64
+      ELEVATION_RANGE_DEG: [-30.0, 20.0]
+      HIDDEN_CHANNELS: 64
+      MAX_MODULATION: 0.25

@@ -139,7 +139,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
 
     if cfg.DATA_CONFIG.DATASET == 'CustomDataset':
         from boreas_benchmark.report import write_reports
-        write_reports(dataset, result_dir, ret_dict, getattr(args, 'range_eval', False), logger)
+        write_reports(dataset, result_dir, ret_dict, getattr(args, 'range_eval', False), logger, cfg=cfg, args=args)
 
     logger.info('Result is saved to %s' % result_dir)
     logger.info('****************Evaluation done.*****************')

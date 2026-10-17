@@ -33,3 +33,6 @@ build/
 __pycache__/
 *.pyc
 *.so
+
+# Keep the benchmark runner with its automatic ring visualization hook.
+!tools/boreas_benchmark/run_metrics.sh

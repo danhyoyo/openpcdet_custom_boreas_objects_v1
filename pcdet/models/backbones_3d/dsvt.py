@@ -12,14 +12,14 @@ class DSVT(nn.Module):
     Args:
         INPUT_LAYER: Config of input layer, which converts the output of vfe to dsvt input.
         block_name (list[string]): Name of blocks for each stage. Length: stage_num.
-        set_info (list[list[int, int]]): A list of set config for each stage. Eelement i contains 
+        set_info (list[list[int, int]]): A list of set config for each stage. Eelement i contains
             [set_size, block_num], where set_size is the number of voxel in a set and block_num is the
             number of blocks for stage i. Length: stage_num.
         d_model (list[int]): Number of input channels for each stage. Length: stage_num.
         nhead (list[int]): Number of attention heads for each stage. Length: stage_num.
-        dim_feedforward (list[int]): Dimensions of the feedforward network in set attention for each stage. 
+        dim_feedforward (list[int]): Dimensions of the feedforward network in set attention for each stage.
             Length: stage num.
-        dropout (float): Drop rate of set attention. 
+        dropout (float): Drop rate of set attention.
         activation (string): Name of activation layer in set attention.
         reduction_type (string): Pooling method between stages. One of: "attention", "maxpool", "linear".
         output_shape (tuple[int, int]): Shape of output bev feature.
@@ -41,7 +41,12 @@ class DSVT(nn.Module):
         self.reduction_type = self.model_cfg.get('reduction_type', 'attention')
         # save GPU memory
         self.use_torch_ckpt = self.model_cfg.get('USE_CHECKPOINT', False)
- 
+        reliability_cfg = self.model_cfg.get('RELIABILITY_ATTENTION', {})
+        self.use_reliability_attention = bool(reliability_cfg.get('ENABLED', False))
+        self.reliability_strength = float(reliability_cfg.get('MAX_VALUE_MODULATION', 0.25))
+        if self.use_reliability_attention and len(block_name) != 1:
+            raise NotImplementedError('Reliability attention currently supports one-stage DSVT')
+
         # Sparse Regional Attention Blocks
         stage_num = len(block_name)
         for stage_id in range(stage_num):
@@ -56,7 +61,9 @@ class DSVT(nn.Module):
             for i in range(num_blocks_this_stage):
                 block_list.append(
                     block_module(dmodel_this_stage, num_head_this_stage, dfeed_this_stage,
-                                 dropout, activation, batch_first=True)
+                                 dropout, activation, batch_first=True,
+                                 use_reliability=self.use_reliability_attention,
+                                 reliability_strength=self.reliability_strength)
                 )
                 norm_list.append(nn.LayerNorm(dmodel_this_stage))
             self.__setattr__(f'stage_{stage_id}', nn.ModuleList(block_list))
@@ -88,14 +95,14 @@ class DSVT(nn.Module):
     def forward(self, batch_dict):
         '''
         Args:
-            bacth_dict (dict): 
+            bacth_dict (dict):
                 The dict contains the following keys
-                - voxel_features (Tensor[float]): Voxel features after VFE. Shape of (N, d_model[0]), 
+                - voxel_features (Tensor[float]): Voxel features after VFE. Shape of (N, d_model[0]),
                     where N is the number of input voxels.
                 - voxel_coords (Tensor[int]): Shape of (N, 4), corresponding voxel coordinates of each voxels.
-                    Each row is (batch_id, z, y, x). 
+                    Each row is (batch_id, z, y, x).
                 - ...
-        
+
         Returns:
             bacth_dict (dict):
                 The dict contains the following keys
@@ -104,8 +111,14 @@ class DSVT(nn.Module):
                 - ...
         '''
         voxel_info = self.input_layer(batch_dict)
-
         voxel_feat = voxel_info['voxel_feats_stage0']
+        voxel_reliability = batch_dict.get('voxel_reliability', None)
+        if self.use_reliability_attention and voxel_reliability is None:
+            raise KeyError('RELIABILITY_ATTENTION requires batch_dict["voxel_reliability"]')
+        if voxel_reliability is not None and voxel_reliability.shape[0] != voxel_feat.shape[0]:
+            raise ValueError('voxel_reliability must align with stage-0 voxel features')
+
+
         set_voxel_inds_list = [[voxel_info[f'set_voxel_inds_stage{s}_shift{i}'] for i in range(self.num_shifts[s])] for s in range(self.stage_num)]
         set_voxel_masks_list = [[voxel_info[f'set_voxel_mask_stage{s}_shift{i}'] for i in range(self.num_shifts[s])] for s in range(self.stage_num)]
         pos_embed_list = [[[voxel_info[f'pos_embed_stage{s}_block{b}_shift{i}'] for i in range(self.num_shifts[s])] for b in range(self.set_info[s][1])] for s in range(self.stage_num)]
@@ -123,9 +136,18 @@ class DSVT(nn.Module):
                 residual = output.clone()
                 if self.use_torch_ckpt==False:
                     output = block(output, set_voxel_inds_list[stage_id], set_voxel_masks_list[stage_id], pos_embed_list[stage_id][i], \
-                                block_id=block_id)
+                                block_id=block_id, voxel_reliability=voxel_reliability)
                 else:
-                    output = checkpoint(block, output, set_voxel_inds_list[stage_id], set_voxel_masks_list[stage_id], pos_embed_list[stage_id][i], block_id)
+                    output = checkpoint(
+                        block,
+                        output,
+                        set_voxel_inds_list[stage_id],
+                        set_voxel_masks_list[stage_id],
+                        pos_embed_list[stage_id][i],
+                        block_id,
+                        voxel_reliability,
+                        use_reentrant=False,
+                    )
                 output = residual_norm_layers[i](output + residual)
                 block_id += 1
             if stage_id < self.stage_num - 1:
@@ -135,7 +157,7 @@ class DSVT(nn.Module):
                 pool_volume = prepool_features.shape[1]
                 prepool_features[pooling_mapping_index[stage_id], pooling_index_in_pool[stage_id]] = output
                 prepool_features = prepool_features.view(prepool_features.shape[0], -1)
-                
+
                 if self.reduction_type == 'linear':
                     output = self.__getattr__(f'stage_{stage_id}_reduction')(prepool_features)
                 elif self.reduction_type == 'maxpool':
@@ -143,7 +165,17 @@ class DSVT(nn.Module):
                     output = self.__getattr__(f'stage_{stage_id}_reduction')(prepool_features).squeeze(-1)
                 elif self.reduction_type == 'attention':
                     prepool_features = prepool_features.view(pooled_voxel_num, pool_volume, -1).permute(0, 2, 1)
-                    key_padding_mask = torch.zeros((pooled_voxel_num, pool_volume)).to(prepool_features.device).int()
+                    # MultiheadAttention expects a boolean or floating-point mask.
+                    # True marks padded pooling slots that must not participate in
+                    # attention; valid voxels are explicitly unmasked below.
+                    key_padding_mask = torch.ones(
+                        (pooled_voxel_num, pool_volume),
+                        dtype=torch.bool,
+                        device=prepool_features.device,
+                    )
+                    key_padding_mask[
+                        pooling_mapping_index[stage_id], pooling_index_in_pool[stage_id]
+                    ] = False
                     output = self.__getattr__(f'stage_{stage_id}_reduction')(prepool_features, key_padding_mask)
                 else:
                     raise NotImplementedError
@@ -162,13 +194,16 @@ class DSVTBlock(nn.Module):
     ''' Consist of two encoder layer, shift and shift back.
     '''
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
-                 activation="relu", batch_first=True):
+                 activation="relu", batch_first=True, use_reliability=False,
+                 reliability_strength=0.25):
         super().__init__()
 
         encoder_1 = DSVT_EncoderLayer(d_model, nhead, dim_feedforward, dropout,
-                                        activation, batch_first)
+                                        activation, batch_first, use_reliability=use_reliability,
+                                        reliability_strength=reliability_strength)
         encoder_2 = DSVT_EncoderLayer(d_model, nhead, dim_feedforward, dropout,
-                                        activation, batch_first)
+                                        activation, batch_first, use_reliability=use_reliability,
+                                        reliability_strength=reliability_strength)
         self.encoder_list = nn.ModuleList([encoder_1, encoder_2])
 
     def forward(
@@ -178,6 +213,7 @@ class DSVTBlock(nn.Module):
             set_voxel_masks_list,
             pos_embed_list,
             block_id,
+            voxel_reliability=None,
     ):
         num_shifts = 2
         output = src
@@ -190,7 +226,8 @@ class DSVTBlock(nn.Module):
             set_voxel_masks = set_voxel_masks_list[shift_id][set_id]
             pos_embed = pos_embed_list[pos_embed_id]
             layer = self.encoder_list[i]
-            output = layer(output, set_voxel_inds, set_voxel_masks, pos_embed)
+            output = layer(output, set_voxel_inds, set_voxel_masks, pos_embed,
+                           voxel_reliability=voxel_reliability)
 
         return output
 
@@ -198,15 +235,24 @@ class DSVTBlock(nn.Module):
 class DSVT_EncoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
-                 activation="relu", batch_first=True, mlp_dropout=0):
+                 activation="relu", batch_first=True, mlp_dropout=0,
+                 use_reliability=False, reliability_strength=0.25):
         super().__init__()
-        self.win_attn = SetAttention(d_model, nhead, dropout, dim_feedforward, activation, batch_first, mlp_dropout)
+        self.win_attn = SetAttention(
+            d_model, nhead, dropout, dim_feedforward, activation, batch_first,
+            mlp_dropout, use_reliability=use_reliability,
+            reliability_strength=reliability_strength
+        )
         self.norm = nn.LayerNorm(d_model)
         self.d_model = d_model
 
-    def forward(self,src,set_voxel_inds,set_voxel_masks,pos=None):
+    def forward(self,src,set_voxel_inds,set_voxel_masks,pos=None,
+                voxel_reliability=None):
         identity = src
-        src = self.win_attn(src, pos, set_voxel_masks, set_voxel_inds)
+        src = self.win_attn(
+            src, pos, set_voxel_masks, set_voxel_inds,
+            voxel_reliability=voxel_reliability
+        )
         src = src + identity
         src = self.norm(src)
 
@@ -214,7 +260,8 @@ class DSVT_EncoderLayer(nn.Module):
 
 class SetAttention(nn.Module):
 
-    def __init__(self, d_model, nhead, dropout, dim_feedforward=2048, activation="relu", batch_first=True, mlp_dropout=0):
+    def __init__(self, d_model, nhead, dropout, dim_feedforward=2048, activation="relu", batch_first=True,
+                 mlp_dropout=0, use_reliability=False, reliability_strength=0.25):
         super().__init__()
         self.nhead = nhead
         if batch_first:
@@ -233,8 +280,15 @@ class SetAttention(nn.Module):
         self.dropout2 = nn.Identity()
 
         self.activation = _get_activation_fn(activation)
+        self.use_reliability = use_reliability
+        self.reliability_strength = reliability_strength
+        if self.use_reliability:
+            self.reliability_embedding = nn.Linear(1, d_model)
+            nn.init.zeros_(self.reliability_embedding.weight)
+            nn.init.zeros_(self.reliability_embedding.bias)
 
-    def forward(self, src, pos=None, key_padding_mask=None, voxel_inds=None):
+    def forward(self, src, pos=None, key_padding_mask=None, voxel_inds=None,
+                voxel_reliability=None):
         '''
         Args:
             src (Tensor[float]): Voxel features with shape (N, C), where N is the number of voxels.
@@ -253,8 +307,28 @@ class SetAttention(nn.Module):
             query = set_features + set_pos
             key = set_features + set_pos
             value = set_features
+        else:
+            query = key = value = set_features
 
-        if key_padding_mask is not None:
+        if self.use_reliability:
+            if voxel_reliability is None:
+                raise ValueError('Reliability-aware attention requires voxel reliability')
+            set_reliability = voxel_reliability[voxel_inds].unsqueeze(-1)
+            key = key + self.reliability_embedding(set_reliability)
+            value = value * (
+                1.0 + self.reliability_strength * (2.0 * set_reliability - 1.0)
+            )
+
+        if query.is_cuda and torch.is_autocast_enabled():
+            # FP16 QK^T can overflow after the one-cycle LR peak. Keep the
+            # attention score, softmax, and its backward path in FP32 while
+            # leaving the VFE, BEV backbone, and detection head under AMP.
+            with torch.autocast(device_type='cuda', enabled=False):
+                src2 = self.self_attn(
+                    query.float(), key.float(), value.float(),
+                    key_padding_mask=key_padding_mask,
+                )[0]
+        elif key_padding_mask is not None:
             src2 = self.self_attn(query, key, value, key_padding_mask)[0]
         else:
             src2 = self.self_attn(query, key, value)[0]
@@ -329,7 +403,7 @@ def _get_block_module(name):
 
 
 class DSVTInputLayer(nn.Module):
-    ''' 
+    '''
     This class converts the output of vfe to dsvt input.
     We do in this class:
     1. Window partition: partition voxels to non-overlapping windows.
@@ -340,22 +414,22 @@ class DSVTInputLayer(nn.Module):
     Args:
         sparse_shape (tuple[int, int, int]): Shape of input space (xdim, ydim, zdim).
         window_shape (list[list[int, int, int]]): Window shapes (winx, winy, winz) in different stages. Length: stage_num.
-        downsample_stride (list[list[int, int, int]]): Downsample strides between two consecutive stages. 
+        downsample_stride (list[list[int, int, int]]): Downsample strides between two consecutive stages.
             Element i is [ds_x, ds_y, ds_z], which is used between stage_i and stage_{i+1}. Length: stage_num - 1.
         d_model (list[int]): Number of input channels for each stage. Length: stage_num.
-        set_info (list[list[int, int]]): A list of set config for each stage. Eelement i contains 
+        set_info (list[list[int, int]]): A list of set config for each stage. Eelement i contains
             [set_size, block_num], where set_size is the number of voxel in a set and block_num is the
             number of blocks for stage i. Length: stage_num.
-        hybrid_factor (list[int, int, int]): Control the window shape in different blocks. 
-            e.g. for block_{0} and block_{1} in stage_0, window shapes are [win_x, win_y, win_z] and 
+        hybrid_factor (list[int, int, int]): Control the window shape in different blocks.
+            e.g. for block_{0} and block_{1} in stage_0, window shapes are [win_x, win_y, win_z] and
             [win_x * h[0], win_y * h[1], win_z * h[2]] respectively.
         shift_list (list): Shift window. Length: stage_num.
         normalize_pos (bool): Whether to normalize coordinates in position embedding.
     '''
     def __init__(self, model_cfg):
         super().__init__()
-        
-        self.model_cfg = model_cfg 
+
+        self.model_cfg = model_cfg
         self.sparse_shape = self.model_cfg.sparse_shape
         self.window_shape = self.model_cfg.window_shape
         self.downsample_stride = self.model_cfg.downsample_stride
@@ -368,7 +442,7 @@ class DSVTInputLayer(nn.Module):
                                                 for coord_id in range(3)]] for s_id in range(self.stage_num)]
         self.shift_list = self.model_cfg.shifts_list
         self.normalize_pos = self.model_cfg.normalize_pos
-            
+
         self.num_shifts = [2,] * len(self.window_shape)
 
         self.sparse_shape_list = [self.sparse_shape]
@@ -376,7 +450,7 @@ class DSVTInputLayer(nn.Module):
         for ds_stride in self.downsample_stride:
             last_sparse_shape = self.sparse_shape_list[-1]
             self.sparse_shape_list.append((ceil(last_sparse_shape[0]/ds_stride[0]), ceil(last_sparse_shape[1]/ds_stride[1]), ceil(last_sparse_shape[2]/ds_stride[2])))
-        
+
         # position embedding layers
         self.posembed_layers = nn.ModuleList()
         for i in range(len(self.set_info)):
@@ -388,33 +462,33 @@ class DSVTInputLayer(nn.Module):
                     block_posembed_layers.append(PositionEmbeddingLearned(input_dim, self.d_model[i]))
                 stage_posembed_layers.append(block_posembed_layers)
             self.posembed_layers.append(stage_posembed_layers)
-       
+
     def forward(self, batch_dict):
         '''
         Args:
-            bacth_dict (dict): 
+            bacth_dict (dict):
                 The dict contains the following keys
-                - voxel_features (Tensor[float]): Voxel features after VFE with shape (N, d_model[0]), 
+                - voxel_features (Tensor[float]): Voxel features after VFE with shape (N, d_model[0]),
                     where N is the number of input voxels.
                 - voxel_coords (Tensor[int]): Shape of (N, 4), corresponding voxel coordinates of each voxels.
-                    Each row is (batch_id, z, y, x). 
+                    Each row is (batch_id, z, y, x).
                 - ...
-        
+
         Returns:
             voxel_info (dict):
                 The dict contains the following keys
                 - voxel_coors_stage{i} (Tensor[int]): Shape of (N_i, 4). N is the number of voxels in stage_i.
                     Each row is (batch_id, z, y, x).
                 - set_voxel_inds_stage{i}_shift{j} (Tensor[int]): Set partition index with shape (2, set_num, set_info[i][0]).
-                    2 indicates x-axis partition and y-axis partition. 
+                    2 indicates x-axis partition and y-axis partition.
                 - set_voxel_mask_stage{i}_shift{i} (Tensor[bool]): Key mask used in set attention with shape (2, set_num, set_info[i][0]).
-                - pos_embed_stage{i}_block{i}_shift{i} (Tensor[float]): Position embedding vectors with shape (N_i, d_model[i]). N_i is the 
+                - pos_embed_stage{i}_block{i}_shift{i} (Tensor[float]): Position embedding vectors with shape (N_i, d_model[i]). N_i is the
                     number of remain voxels in stage_i;
                 - pooling_mapping_index_stage{i} (Tensor[int]): Pooling region index used in pooling operation between stage_{i-1} and stage_{i}
-                    with shape (N_{i-1}). 
-                - pooling_index_in_pool_stage{i} (Tensor[int]): Index inner region with shape (N_{i-1}). Combined with pooling_mapping_index_stage{i}, 
+                    with shape (N_{i-1}).
+                - pooling_index_in_pool_stage{i} (Tensor[int]): Index inner region with shape (N_{i-1}). Combined with pooling_mapping_index_stage{i},
                     we can map each voxel in satge_{i-1} to pooling_preholder_feats_stage{i}, which are input of downsample operation.
-                - pooling_preholder_feats_stage{i} (Tensor[int]): Preholder features initial with value 0. 
+                - pooling_preholder_feats_stage{i} (Tensor[int]): Preholder features initial with value 0.
                     Shape of (N_{i}, downsample_stride[i-1].prob(), d_moel[i-1]), where prob() returns the product of all elements.
                 - ...
         '''
@@ -424,7 +498,7 @@ class DSVTInputLayer(nn.Module):
         voxel_info = {}
         voxel_info['voxel_feats_stage0'] = voxel_feats.clone()
         voxel_info['voxel_coors_stage0'] = voxel_coors.clone()
-        
+
         for stage_id in range(self.stage_num):
             # window partition of corrsponding stage-map
             voxel_info = self.window_partition(voxel_info, stage_id)
@@ -434,13 +508,13 @@ class DSVTInputLayer(nn.Module):
                 for shift_id in range(self.num_shifts[stage_id]):
                     voxel_info[f'pos_embed_stage{stage_id}_block{block_id}_shift{shift_id}'] = \
                     self.get_pos_embed(voxel_info[f'coors_in_win_stage{stage_id}_shift{shift_id}'], stage_id, block_id, shift_id)
-            
+
             # compute pooling information
             if stage_id < self.stage_num - 1:
                 voxel_info = self.subm_pooling(voxel_info, stage_id)
-        
+
         return voxel_info
-    
+
     @torch.no_grad()
     def subm_pooling(self, voxel_info, stage_id):
         # x,y,z stride
@@ -450,9 +524,9 @@ class DSVTInputLayer(nn.Module):
         # compute pooling mapping index
         unique_batch_win_inds, contiguous_batch_win_inds = torch.unique(batch_win_inds, return_inverse=True)
         voxel_info[f'pooling_mapping_index_stage{stage_id+1}'] = contiguous_batch_win_inds
-        
+
         # generate empty placeholder features
-        placeholder_prepool_feats = voxel_info[f'voxel_feats_stage0'].new_zeros((len(unique_batch_win_inds), 
+        placeholder_prepool_feats = voxel_info[f'voxel_feats_stage0'].new_zeros((len(unique_batch_win_inds),
                     torch.prod(torch.IntTensor(cur_stage_downsample)).item(), self.d_model[stage_id]))
         voxel_info[f'pooling_index_in_pool_stage{stage_id+1}'] = index_in_win
         voxel_info[f'pooling_preholder_feats_stage{stage_id+1}'] = placeholder_prepool_feats
@@ -465,29 +539,29 @@ class DSVTInputLayer(nn.Module):
         pool_coors = batch_win_coors[perm]
 
         voxel_info[f'voxel_coors_stage{stage_id+1}'] = pool_coors
-        
+
         return voxel_info
-    
+
     def get_set(self, voxel_info, stage_id):
         '''
-        This is one of the core operation of DSVT. 
+        This is one of the core operation of DSVT.
         Given voxels' window ids and relative-coords inner window, we partition them into window-bounded and size-equivalent local sets.
         To make it clear and easy to follow, we do not use loop to process two shifts.
         Args:
-            voxel_info (dict): 
+            voxel_info (dict):
                 The dict contains the following keys
                 - batch_win_inds_s{i} (Tensor[float]): Windows indexs of each voxel with shape (N), computed by 'window_partition'.
                 - coors_in_win_shift{i} (Tensor[int]): Relative-coords inner window of each voxel with shape (N, 3), computed by 'window_partition'.
-                    Each row is (z, y, x). 
+                    Each row is (z, y, x).
                 - ...
-        
+
         Returns:
             See from 'forward' function.
         '''
         batch_win_inds_shift0 = voxel_info[f'batch_win_inds_stage{stage_id}_shift0']
         coors_in_win_shift0 = voxel_info[f'coors_in_win_stage{stage_id}_shift0']
         set_voxel_inds_shift0 = self.get_set_single_shift(batch_win_inds_shift0, stage_id, shift_id=0, coors_in_win=coors_in_win_shift0)
-        voxel_info[f'set_voxel_inds_stage{stage_id}_shift0'] = set_voxel_inds_shift0  
+        voxel_info[f'set_voxel_inds_stage{stage_id}_shift0'] = set_voxel_inds_shift0
         # compute key masks, voxel duplication must happen continuously
         prefix_set_voxel_inds_s0 = torch.roll(set_voxel_inds_shift0.clone(), shifts=1, dims=-1)
         prefix_set_voxel_inds_s0[ :, :, 0] = -1
@@ -497,7 +571,7 @@ class DSVTInputLayer(nn.Module):
         batch_win_inds_shift1 = voxel_info[f'batch_win_inds_stage{stage_id}_shift1']
         coors_in_win_shift1 = voxel_info[f'coors_in_win_stage{stage_id}_shift1']
         set_voxel_inds_shift1 = self.get_set_single_shift(batch_win_inds_shift1, stage_id, shift_id=1, coors_in_win=coors_in_win_shift1)
-        voxel_info[f'set_voxel_inds_stage{stage_id}_shift1'] = set_voxel_inds_shift1  
+        voxel_info[f'set_voxel_inds_stage{stage_id}_shift1'] = set_voxel_inds_shift1
         # compute key masks, voxel duplication must happen continuously
         prefix_set_voxel_inds_s1 = torch.roll(set_voxel_inds_shift1.clone(), shifts=1, dims=-1)
         prefix_set_voxel_inds_s1[ :, :, 0] = -1
@@ -505,7 +579,7 @@ class DSVTInputLayer(nn.Module):
         voxel_info[f'set_voxel_mask_stage{stage_id}_shift1'] = set_voxel_mask_s1
 
         return voxel_info
-    
+
     def get_set_single_shift(self, batch_win_inds, stage_id, shift_id=None, coors_in_win=None):
         device = batch_win_inds.device
         # the number of voxels assigned to a set
@@ -519,8 +593,8 @@ class DSVTInputLayer(nn.Module):
         setnum_per_win_float = voxelnum_per_win / voxel_num_set
         setnum_per_win = torch.ceil(setnum_per_win_float).long()
         set_win_inds, set_inds_in_win = get_continous_inds(setnum_per_win)
-        
-        # compution of Eq.3 in 'DSVT: Dynamic Sparse Voxel Transformer with Rotated Sets' - https://arxiv.org/abs/2301.06051, 
+
+        # compution of Eq.3 in 'DSVT: Dynamic Sparse Voxel Transformer with Rotated Sets' - https://arxiv.org/abs/2301.06051,
         # for each window, we can get voxel indexs belong to different sets.
         offset_idx = set_inds_in_win[:,None].repeat(1, voxel_num_set) * voxel_num_set
         base_idx = torch.arange(0, voxel_num_set, 1, device=device)
@@ -531,7 +605,7 @@ class DSVTInputLayer(nn.Module):
         # obtain unique indexs in whole space
         select_idx = base_select_idx
         select_idx = select_idx + set_win_inds.view(-1, 1) * max_voxel
-           
+
         # this function will return unordered inner window indexs of each voxel
         inner_voxel_inds = get_inner_win_inds_cuda(contiguous_win_inds)
         global_voxel_inds = contiguous_win_inds * max_voxel + inner_voxel_inds
@@ -569,12 +643,12 @@ class DSVTInputLayer(nn.Module):
     @torch.no_grad()
     def window_partition(self, voxel_info, stage_id):
         for i in range(2):
-            batch_win_inds, coors_in_win = get_window_coors(voxel_info[f'voxel_coors_stage{stage_id}'], 
+            batch_win_inds, coors_in_win = get_window_coors(voxel_info[f'voxel_coors_stage{stage_id}'],
                                                         self.sparse_shape_list[stage_id], self.window_shape[stage_id][i], i == 1, self.shift_list[stage_id][i])
-                                            
+
             voxel_info[f'batch_win_inds_stage{stage_id}_shift{i}'] = batch_win_inds
             voxel_info[f'coors_in_win_stage{stage_id}_shift{i}'] = coors_in_win
-        
+
         return voxel_info
 
     def get_pos_embed(self, coors_in_win, stage_id, block_id, shift_id):
@@ -584,7 +658,7 @@ class DSVTInputLayer(nn.Module):
         '''
         # [N,]
         window_shape = self.window_shape[stage_id][shift_id]
-       
+
         embed_layer = self.posembed_layers[stage_id][block_id][shift_id]
         if len(window_shape) == 2:
             ndim = 2
@@ -605,7 +679,7 @@ class DSVTInputLayer(nn.Module):
             x = x / win_x * 2 * 3.1415 #[-pi, pi]
             y = y / win_y * 2 * 3.1415 #[-pi, pi]
             z = z / win_z * 2 * 3.1415 #[-pi, pi]
-        
+
         if ndim==2:
             location = torch.stack((x, y), dim=-1)
         else:
