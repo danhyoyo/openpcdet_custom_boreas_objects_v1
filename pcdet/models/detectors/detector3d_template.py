@@ -1,4 +1,5 @@
 import os
+import importlib
 
 import torch
 import torch.nn as nn
@@ -16,8 +17,11 @@ def _load_checkpoint(filename, map_location=None):
     # exposes their implementation under numpy._core, while the checkpoint
     # records the historical numpy.core name. Map the trusted numeric type to
     # that serialized name and retain PyTorch's weights-only loader.
-    numpy_core = np._core if hasattr(np, '_core') else np.core
-    allowed = [(numpy_core.multiarray.scalar, 'numpy.core.multiarray.scalar'),
+    try:
+        numpy_multiarray = importlib.import_module('numpy._core.multiarray')
+    except ModuleNotFoundError:
+        numpy_multiarray = importlib.import_module('numpy.core.multiarray')
+    allowed = [(numpy_multiarray.scalar, 'numpy.core.multiarray.scalar'),
                np.dtype, type(np.dtype(np.float64)), type(np.dtype(np.float32))]
     with torch.serialization.safe_globals(allowed):
         return torch.load(filename, map_location=map_location, weights_only=True)

@@ -1,38 +1,84 @@
-**__pycache__**
-**build**
-**egg-info**
-**dist**
-data/
-*.pyc
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
 venv/
-*.idea/
+env/
+
+# Build products and generated package version
+/build/
+/dist/
+*.egg-info/
 *.so
-*.yaml
-*.sh
+*.o
+*.a
+/pcdet/version.py
+
+# Local datasets, checkpoints, predictions and experiment outputs
+/data/
+/datasets/
+/output/
+/outputs/
+results/
+results_*/
+/logs/
+/runs/
+/checkpoints/
+wandb/
+mlruns/
+/tmp/
 *.pth
+*.pt
+*.ckpt
 *.pkl
-*.zip
+*.pickle
+*.npy
+*.npz
 *.bin
-output
-version.py
+*.onnx
+*.engine
+*.log
+*.tfevents.*
+/tools/cfgs/boreas_models/anchor_statistics.json
 
-# Local datasets and training artifacts
-data/
-output/
-build/
-*.egg-info/
-__pycache__/
-*.pyc
-*.so
+# Private manuscripts, paper exports and personal project summaries
+/docs/paper/
+/docs/papers/
+/docs/Accuracy__Efficiency__and_Sparsity_Robustness_*/
+/paper/
+/papers/
+/manuscripts/
+/tom_tat_du_an_*.docx
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
 
-# Local datasets and training artifacts
-data/
-output/
-build/
-*.egg-info/
-__pycache__/
-*.pyc
-*.so
+# Editor, patch and Windows download metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.orig
+*.rej
+*.bak
+*.swp
+*.swo
+*~
+*Zone.Identifier*
 
-# Keep the benchmark runner with its automatic ring visualization hook.
-!tools/boreas_benchmark/run_metrics.sh
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+!.env.sample
+.aws/
+
+# Keep source configs (.yaml/.yml), shell scripts (.sh), notebooks,
+# example CSV manifests, tests and upstream documentation versioned.
